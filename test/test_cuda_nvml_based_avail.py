@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: cuda"]
 
 import multiprocessing
@@ -73,7 +74,14 @@ class TestExtendedCUDAIsAvail(TestCase):
                     _ = torch.cuda.is_available()
             with multiprocessing.get_context("fork").Pool(1) as pool:
                 in_bad_fork = pool.apply(TestExtendedCUDAIsAvail.in_bad_fork_test)
-            if os.getenv("PYTORCH_NVML_BASED_CUDA_CHECK") == "1" and nvml_avail:
+            # Expect fork-safety when nvml_avail is True (NVML for CUDA builds,
+            # HGML for SAIL builds). When the management library is
+            # unavailable, the CUDA Runtime fallback initializes the driver and
+            # poisons fork regardless of the env var setting.
+            expect_fork_safe = (
+                os.getenv("PYTORCH_NVML_BASED_CUDA_CHECK") == "1" and nvml_avail
+            )
+            if expect_fork_safe:
                 self.assertFalse(
                     in_bad_fork, TestExtendedCUDAIsAvail.SUBPROCESS_REMINDER_MSG
                 )

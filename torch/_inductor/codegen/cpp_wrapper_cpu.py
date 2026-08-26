@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from ..ir import ExternKernel
 from ..utils import _align, DeferredLineBase, LineContext, normalize_name
 from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
+from .aoti_sailify_utils import maybe_sailify_code_wrapper, _IS_PPU
 from .common import get_device_op_overrides, IndentedBuffer, Kernel
 from .cpp_utils import cexpr, DEVICE_TO_ATEN, DEVICE_TO_INT, DTYPE_TO_ATEN, DTYPE_TO_CPP
 from .wrapper import (
@@ -35,6 +37,13 @@ from .wrapper import (
     PythonWrapperCodegen,
     SymbolicCallArg,
 )
+
+
+def _maybe_device_code_wrapper(source_codes: str) -> str:
+    """Dispatch to sailify (PPU) or hipify (AMD) based on platform."""
+    if _IS_PPU:
+        return maybe_sailify_code_wrapper(source_codes)
+    return maybe_hipify_code_wrapper(source_codes)
 
 
 if TYPE_CHECKING:
@@ -717,7 +726,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
             )
         for kernel in sorted(declare_kernel):
             self.prefix.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     f"    {self.device_codegen.cpp_kernel_type()} {kernel}{{nullptr}};"
                 )
             )

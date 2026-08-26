@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 """
 The torch package contains data structures for multi-dimensional
 tensors and defines mathematical operations over these tensors.
@@ -318,7 +319,60 @@ def _preload_cuda_lib(lib_folder: str, lib_name: str, required: bool = True) -> 
         ctypes.CDLL(lib_path)
 
 
+def _is_sail_mode() -> bool:
+    # SAIL (PPU) mode is fixed at build time and recorded in
+    # torch.version.sail (non-None only for USE_SAIL builds), mirroring how
+    # torch.version.hip marks ROCm builds. This runs on the early import-torch
+    # path, so we read the marker directly from the generated, dependency-free
+    # torch/version.py (which never imports torch); fall back to False when it
+    # is absent (e.g. an uncompiled source tree).
+    try:
+        from torch.version import sail as _sail
+    except Exception:
+        return False
+    return _sail is not None
+
+
+def _preload_ppu_cuda_free_deps() -> None:
+    # `source $PPU_SDK/envsetup.sh ppu` puts the PPU SDK lib directory on
+    # LD_LIBRARY_PATH at runtime, so preload by bare soname and let the dynamic
+    # loader resolve them. Fall back to an explicit $PPU_SDK path only if the
+    # loader cannot find a library. Do not hardcode a fixed install prefix.
+    ppu_libs = [
+        "libhggc.so",
+        "libhggcrt1.so",
+        "libhgrtc.so",
+        "libhgrtc_builtins.so",
+        "libacblas.so",
+        "libacblasLt.so",
+        "libacdnn.so",
+        "libacfft.so",
+        "libacrand.so",
+        "libacsparse.so",
+        "libacsolver.so",
+        "libpccl.so",
+    ]
+    ppu_sdk = os.environ.get("PPU_SDK")
+    lib_dir = (
+        os.path.join(ppu_sdk, "targets", "x86_64-linux", "lib") if ppu_sdk else None
+    )
+    for lib_name in ppu_libs:
+        try:
+            ctypes.CDLL(lib_name)
+            continue
+        except OSError:
+            pass
+        if lib_dir:
+            lib_path = os.path.join(lib_dir, lib_name)
+            if os.path.exists(lib_path):
+                ctypes.CDLL(lib_path)
+
+
 def _preload_cuda_deps(err: OSError | None = None) -> None:
+    if _is_sail_mode():
+        _preload_ppu_cuda_free_deps()
+        return
+
     cuda_libs: list[tuple[str, str]] = [
         ("cublas", "libcublas.so.*[0-9]"),
         ("cudnn", "libcudnn.so.*[0-9]"),
@@ -375,7 +429,7 @@ def _load_global_deps() -> None:
                 _maps = f.read()
 
             # libtorch_global_deps.so always depends in cudart, check if its installed and loaded
-            if "libcudart.so" not in _maps:
+            if "libcudart.so" not in _maps and not _is_sail_mode():
                 return
             # If all above-mentioned conditions are met, preload CUDA dependencies
             _preload_cuda_deps()

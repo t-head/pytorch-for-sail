@@ -12,10 +12,17 @@
 
 namespace c10::CachingAllocator {
 
+#ifdef USE_PPU
+// "large" allocations may be packed in 32 MiB blocks for PPU
+const size_t kLargeBuffer = 33554432;
+// "small" allocations are packed in 8 MiB blocks
+constexpr size_t kSmallBuffer = 8388608;
+#else
 // "large" allocations may be packed in 20 MiB blocks
 constexpr size_t kLargeBuffer = 20971520;
 // "small" allocations are packed in 2 MiB blocks
 constexpr size_t kSmallBuffer = 2097152;
+#endif
 // all sizes are rounded to at least 512 bytes
 constexpr size_t kMinBlockSize = 512;
 // largest "small" allocation is 1 MiB

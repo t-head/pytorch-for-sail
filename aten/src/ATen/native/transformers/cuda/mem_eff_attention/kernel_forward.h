@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -25,15 +26,26 @@
 
 #include <cutlass/epilogue/threadblock/default_epilogue_simt.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_tensor_op.h>
+#if !defined(USE_PPU)
+// PPU (SM80+) never instantiates the Volta (SM70) epilogue. DefaultEpilogueVoltaTensorOp
+// is a dead include here (0 references in mem_eff), and the PPU cutlass fork removed the
+// Volta warp sub-headers (fragment_iterator_volta_tensor_op.h ...), so pulling this header
+// causes a preprocessor fatal error. Gate it out on PPU. See docs.
 #include <cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h>
+#endif
 
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
+// PPU: sm70/sm75/sm80 default_mma_core 统一映射到 ppu0010（sm80 以下不单独实例化）
+#if defined(USE_PPU)
+#include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
+#else
 #include <cutlass/gemm/threadblock/default_mma_core_sm70.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm75.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm80.h>
+#endif
 #include <cutlass/gemm/threadblock/threadblock_swizzle.h>
 #include <cutlass/matrix_shape.h>
 #include <cutlass/platform/platform.h>

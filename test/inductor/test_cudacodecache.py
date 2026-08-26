@@ -1,10 +1,11 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: inductor"]
 
 import ctypes
 
 import torch
 from torch._inductor.async_compile import AsyncCompile
-from torch._inductor.codecache import CUDACodeCache
+from torch._inductor.codecache import _is_ppu, _ppu_compiler, CUDACodeCache
 from torch._inductor.codegen.cuda.cuda_env import nvcc_exist
 from torch._inductor.exc import CUDACompileError
 from torch._inductor.test_case import TestCase as InductorTestCase
@@ -96,5 +97,7 @@ class TestCUDACodeCache(InductorTestCase):
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if nvcc_exist():
+    # nvcc_exist() alone silently collects zero tests on PPU SAIL builds,
+    # where hgcc replaces nvcc. The run still exits 0, so CI reads it as a pass.
+    if nvcc_exist() or (_is_ppu() and _ppu_compiler() is not None):
         run_tests("cuda")

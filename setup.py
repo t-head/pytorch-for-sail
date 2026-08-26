@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Welcome to the PyTorch setup.py.
 # Environment variables you are probably interested in:
 #
@@ -126,6 +127,10 @@
 #   PYTORCH_BUILD_NUMBER
 #     specify the version of PyTorch, rather than the hard-coded version
 #     in this file; used when we're building binaries for distribution
+#
+#   PYTORCH_SAIL_ARCH
+#     specify which native PPU architectures to build for in SAIL mode.
+#     ie `PYTORCH_SAIL_ARCH="ppu_10;ppu_15"`
 #
 #   TORCH_CUDA_ARCH_LIST
 #     specify which CUDA architectures to build for.
@@ -520,13 +525,7 @@ def get_submodule_folders() -> list[Path]:
     git_modules_file = CWD / ".gitmodules"
     default_modules_path = [
         THIRD_PARTY_DIR / name
-        for name in [
-            "gloo",
-            "cpuinfo",
-            "onnx",
-            "fbgemm",
-            "cutlass",
-        ]
+        for name in ["gloo", "cpuinfo", "onnx", "fbgemm", "cutlass3", "cutlass"]
     ]
     if not git_modules_file.exists():
         return default_modules_path
@@ -635,6 +634,7 @@ def mirror_inductor_external_kernels() -> None:
     Copy external kernels into Inductor so they are importable.
     """
     cuda_is_disabled = not str2bool(os.getenv("USE_CUDA"))
+    sail_mode = str2bool(os.getenv("USE_SAIL"))
     paths = [
         (
             CWD / "torch/_inductor/kernel/vendored_templates/cutedsl_grouped_gemm.py",
@@ -663,7 +663,7 @@ def mirror_inductor_external_kernels() -> None:
         if (
             not orig_path.exists()
             and allow_missing_if_cuda_is_disabled
-            and cuda_is_disabled
+            and (cuda_is_disabled or sail_mode)
         ):
             continue
         raise RuntimeError(
@@ -1039,6 +1039,9 @@ def build_deps() -> None:
 
     check_submodules()
     check_pydep("yaml", "pyyaml")
+    # Must precede cmake: gloo's Sailify.cmake looks for a `sailify` program at
+    # configure time.
+    _ensure_sailify_command()
     build_pytorch(
         version=TORCH_VERSION,
         cmake_python_library=CMAKE_PYTHON_LIBRARY.as_posix(),
@@ -1152,6 +1155,14 @@ class build_ext(setuptools.command.build_ext.build_ext):
 
             header_file.write_text(wrapped_content, encoding="utf-8")
             report(f"Wrapped header: {rel_path}")
+
+    def _copy_ppu_compat_headers(self) -> None:
+        src, dst = CWD / ".ppu_compat", Path(self.build_lib) / "torch" / ".ppu_compat"
+        if not src.is_dir():
+            return
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in src.glob("*.h"):
+            shutil.copy2(f, dst / f.name)
 
     def _embed_libomp(self) -> None:
         # Copy libiomp5.dylib/libomp.dylib inside the wheel package on MacOS
@@ -1320,6 +1331,9 @@ class build_ext(setuptools.command.build_ext.build_ext):
 
         super().run()
 
+        if str2bool(os.getenv("USE_SAIL")):
+            self._copy_ppu_compat_headers()
+
         # Wrap headers with TORCH_STABLE_ONLY and TORCH_TARGET_VERSION guards
         build_lib = Path(self.build_lib)
         build_torch_include_dir = build_lib / "torch" / "include"
@@ -1481,6 +1495,32 @@ class clean(Command):
                         shutil.rmtree(filename, ignore_errors=True)
 
 
+class sailify(Command):
+    """Convert CUDA sources to PPU sources with Sailify.
+
+    In-place (default): this tree is rewritten. Out-of-place
+    (SAILIFY_OUTPUT_DIR set): the converted tree is written there and this
+    tree is left untouched. In neither case is a wheel produced; for
+    out-of-place runs run ``bdist_wheel`` in the converted tree afterwards.
+    Re-running is safe: an up-to-date tree (checked via the ``.sailify_done``
+    marker) is skipped unless SAILIFY_FORCE=1.
+    """
+
+    description = "convert CUDA sources to PPU sources with Sailify"
+    user_options: ClassVar[list[tuple[str, str | None, str]]] = []
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        if not str2bool(os.getenv("USE_SAIL")):
+            raise RuntimeError("The 'sailify' command requires USE_SAIL=1.")
+        run_sailify_conversion()
+
+
 # Need to dump submodule hashes and create the proper LICENSE.txt for the sdist
 class sdist(setuptools.command.sdist.sdist):
     def run(self) -> None:
@@ -1503,6 +1543,7 @@ def configure_extension_build() -> tuple[
     list[str],  # packages
     dict[str, list[str]],  # entry_points
     list[str],  # extra_install_requires
+    dict[str, str],  # package_dir
 ]:
     r"""Configures extension build options according to system environment and user's choice.
 
@@ -1619,7 +1660,23 @@ def configure_extension_build() -> tuple[
         includes.extend(["functorch", "functorch.*"])
     else:
         excludes.extend(["functorch", "functorch.*"])
+
+    # When USE_SAIL, vendor sailify under torch.sailify (like torch.utils.hipify).
+    # Runtime only needs .py files; compat headers are pre-built into torch/.ppu_compat/.
+    package_dir = {}
+    sailify_packages = []
+    if str2bool(os.getenv("USE_SAIL")):
+        sailify_src = CWD / "third_party" / "sailify"
+        includes.extend(["torch.sailify", "torch.sailify.*"])
+        # Discover subpackages under sailify source, then prefix with torch.
+        _sailify_found = find_packages(
+            where=str(sailify_src), include=["sailify", "sailify.*"]
+        )
+        sailify_packages = ["torch." + p for p in _sailify_found]
+        package_dir = {"torch.sailify": str(sailify_src / "sailify")}
+
     packages = find_packages(include=includes, exclude=excludes)
+    packages.extend(sailify_packages)
     C = Extension(
         "torch._C",
         libraries=main_libraries,
@@ -1643,6 +1700,7 @@ def configure_extension_build() -> tuple[
         "bdist_wheel": bdist_wheel,
         "build_ext": build_ext,
         "clean": clean,
+        "sailify": sailify,
         "sdist": sdist,
     }
 
@@ -1660,7 +1718,7 @@ def configure_extension_build() -> tuple[
         entry_points["console_scripts"].append(
             "torchfrtrace = torch.distributed.flight_recorder.fr_trace:main",
         )
-    return ext_modules, cmdclass, packages, entry_points, extra_install_requires
+    return ext_modules, cmdclass, packages, entry_points, extra_install_requires, package_dir
 
 
 # post run, warnings, printed at the end to make them more visible
@@ -1686,12 +1744,429 @@ def print_box(msg: str) -> None:
     print("+" + "-" * (max_width + 4) + "+", file=sys.stderr, flush=True)
 
 
+def apply_patch(patch_file: str, target_root: str, strip: int = 1) -> None:
+    import re
+
+    if not os.path.isfile(patch_file):
+        raise FileNotFoundError(f"The patch file doesn't exist: {patch_file}")
+    try:
+        subprocess.run(
+            ["patch", f"-p{strip}", "-i", patch_file],
+            cwd=target_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        print(f"Apply patch: {patch_file}")
+    except subprocess.CalledProcessError as e:
+        error_output = e.stderr or e.stdout
+        print(f"error_output: {error_output}")
+        if error_output and re.search(
+            "already exists|Reversed|previously applied", error_output, re.IGNORECASE
+        ):
+            print("Patch already applied, skipping.")
+        else:
+            print(f"Failed to apply patch: {e}")
+            sys.exit(1)
+
+
+def check_path_exists(path: str) -> None:
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"The path doesn't exist: '{path}', please check PPU_SDK environment."
+        )
+
+
+def Init_ppu_build_env() -> None:
+    # NCCL/PCCL path selection — controlled by USE_SAIL:
+    #   USE_SAIL=1 (sail mode)
+    #     → use PPU native PCCL path: /usr/local/PPU_SDK/targets/x86_64-linux/{include,lib}
+    #       (pccl.h + libpccl.so; FindNCCL.cmake maps NCCL variables to PCCL)
+    #   USE_SAIL unset/0/other (CUDA-compat mode, default)
+    #     → /usr/local/PPU_SDK/CUDA_SDK/{include,lib64}
+    #       (CUDA-style layout with nccl.h + libnccl.so)
+    # User env vars (NCCL_INCLUDE_DIR / NCCL_LIB_DIR) always take precedence:
+    # the `os.getenv("NCCL_INCLUDE_DIR") is None` guards below skip assignment
+    # when user has already exported them.
+    use_sail = os.environ.get("USE_SAIL", "0") in ("1", "TRUE", "true", "ON", "on")
+    if use_sail:
+        ppu_nccl_path = "/usr/local/PPU_SDK/targets/x86_64-linux/include"
+        ppu_nccl_lib  = "/usr/local/PPU_SDK/targets/x86_64-linux/lib"
+        print("PPU build mode: SAIL (USE_SAIL=1), NCCL mapped to PCCL")
+    else:
+        ppu_nccl_path = "/usr/local/PPU_SDK/CUDA_SDK/include"
+        ppu_nccl_lib  = "/usr/local/PPU_SDK/CUDA_SDK/lib64"
+
+    # check PPU_SDK path
+    check_path_exists(ppu_nccl_path)
+    check_path_exists(ppu_nccl_lib)
+
+    # specify where nccl include is installed
+    if os.getenv("NCCL_INCLUDE_DIR") is None:
+        os.environ["NCCL_INCLUDE_DIR"] = ppu_nccl_path
+        print(f"Set NCCL_INCLUDE_DIR to: {ppu_nccl_path}")
+    else:
+        print(f"Using existing NCCL_INCLUDE_DIR: {os.getenv('NCCL_INCLUDE_DIR')}")
+ 
+    # specify where nccl lib is installed
+    if os.getenv("NCCL_LIB_DIR") is None:
+        os.environ["NCCL_LIB_DIR"] = ppu_nccl_lib
+        print(f"Set NCCL_LIB_DIR to: {ppu_nccl_lib}")
+    else:
+        print(f"Using existing NCCL_LIB_DIR: {os.getenv('NCCL_LIB_DIR')}")
+
+    # enable building flash attention for scaled dot product attention
+    if os.getenv("USE_FLASH_ATTENTION") is None:
+        os.environ["USE_FLASH_ATTENTION"] = "True"
+
+    # enable building memory efficient attention for scaled dot product attention
+    if os.getenv("USE_MEM_EFF_ATTENTION") is None:
+        os.environ["USE_MEM_EFF_ATTENTION"] = "True"
+
+    # SAIL builds use native PPU architecture names and do not accept CUDA
+    # compute capabilities. Keep TORCH_CUDA_ARCH_LIST for non-SAIL builds.
+    if use_sail:
+        if os.getenv("TORCH_CUDA_ARCH_LIST"):
+            raise RuntimeError(
+                "SAIL builds do not support TORCH_CUDA_ARCH_LIST. "
+                "Unset it and set PYTORCH_SAIL_ARCH to ppu_10, ppu_15, "
+                "or a semicolon-separated list of both."
+            )
+        sail_arch = os.getenv("PYTORCH_SAIL_ARCH")
+        if not sail_arch:
+            raise RuntimeError(
+                "SAIL builds require PYTORCH_SAIL_ARCH. Set it to ppu_10, "
+                "ppu_15, or a semicolon-separated list of both."
+            )
+        sail_arches = [
+            arch for arch in sail_arch.replace(" ", ";").split(";") if arch
+        ]
+        if not sail_arches:
+            raise RuntimeError(
+                "PYTORCH_SAIL_ARCH must include ppu_10, ppu_15, or both."
+            )
+        unsupported_arches = sorted(set(sail_arches) - {"ppu_10", "ppu_15"})
+        if unsupported_arches:
+            raise RuntimeError(
+                "Unsupported PYTORCH_SAIL_ARCH value(s): "
+                f"{', '.join(unsupported_arches)}. Supported values are "
+                "ppu_10 and ppu_15."
+            )
+    elif os.getenv("TORCH_CUDA_ARCH_LIST") is None:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
+
+    # enable nccl
+    if os.getenv("USE_NCCL") is None:
+        os.environ["USE_NCCL"] = "True"
+
+    # enable use of system-wide nccl
+    if os.getenv("USE_SYSTEM_NCCL") is None:
+        os.environ["USE_SYSTEM_NCCL"] = "1"
+
+    if os.getenv("BUILD_TEST") is None:
+        os.environ["BUILD_TEST"] = "False"
+
+    print("Init ppu build env done ...")
+
+# Written into a converted tree so that re-running setup.py there builds
+# instead of trying to convert an already-converted tree.
+SAILIFY_MARKER = ".sailify_done"
+
+# Extensions sailify rewrites (mirrors its DEFAULT_EXTENSIONS) and directories
+# that cannot change the result but would dominate the walk.
+_SAILIFY_EXTS = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".hpp", ".inl")
+_SAILIFY_SKIP_DIRS = {".git", "build", "dist", "__pycache__", ".ppu_compat"}
+
+
+def _sailify_fingerprint() -> str:
+    """Cheap signature of the inputs that determine the conversion output.
+
+    Counting the convertible sources and taking the newest mtime is enough to
+    notice edits and added/removed files without hashing a tree this size. A
+    checkout that only touches mtimes triggers one redundant conversion, which
+    is the harmless direction to err in.
+    """
+    newest = 0.0
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(CWD):
+        dirnames[:] = [d for d in dirnames if d not in _SAILIFY_SKIP_DIRS]
+        for name in filenames:
+            if name.endswith(_SAILIFY_EXTS):
+                try:
+                    newest = max(newest, os.stat(os.path.join(dirpath, name)).st_mtime)
+                except OSError:
+                    continue
+                count += 1
+    return f"sources={count} newest_mtime={newest:.0f}"
+
+
+def run_sailify_conversion() -> bool:
+    """Convert this tree's CUDA sources to PPU. Returns True when the conversion
+    was in place (so the caller should keep building this tree), False when it
+    went to a separate output tree (so the caller should stop -- the build has
+    to run over there).
+
+    Two modes:
+
+    * In-place (default). sailify() with an empty output_directory falls
+      back to output_directory = project_directory and rewrites every
+      .cu/.cuh/.c/.cc/.cpp/.h/.hpp/.inl under the tree -- including third_party,
+      which is not in its SKIP_DIRS. The build continues on this tree in the
+      same invocation. This is only safe on a throwaway checkout (CI) where
+      there is no committable tree or pristine submodule to protect; on a dev
+      tree set SAILIFY_OUTPUT_DIR to convert out of place instead.
+
+    * Out-of-place (SAILIFY_OUTPUT_DIR set). The result is written elsewhere
+      and this tree is left untouched, staying upstream CUDA code plus our
+      PPU patches with the cutlass/gloo submodules pristine. Because the
+      result lands elsewhere, this tree is still CUDA code afterwards and
+      cannot be built; the caller stops.
+
+    Re-running is safe and cheap. sailify's _copytree_compat() overwrites the
+    output tree file by file (swallowing errors), so converting again would
+    silently discard edits made there while debugging. A fingerprint of the
+    sources is recorded in the target tree and the conversion is skipped while
+    it still matches; SAILIFY_FORCE=1 converts regardless.
+    """
+    out_dir_env = os.getenv("SAILIFY_OUTPUT_DIR")
+    explicit_in_place = str2bool(os.getenv("SAILIFY_IN_PLACE"))
+    if explicit_in_place and out_dir_env:
+        raise RuntimeError(
+            "SAILIFY_IN_PLACE and SAILIFY_OUTPUT_DIR are mutually exclusive; "
+            "unset one of them."
+        )
+    # In-place is the default: without SAILIFY_OUTPUT_DIR this tree is
+    # rewritten and the build continues on it. SAILIFY_IN_PLACE=1 is accepted
+    # as an explicit declaration of the default behavior.
+    in_place = explicit_in_place or not out_dir_env
+    if in_place:
+        out_dir = os.path.abspath(CWD)
+    else:
+        out_dir = os.path.abspath(out_dir_env)
+        if out_dir == os.path.abspath(CWD):
+            raise RuntimeError(
+                f"SAILIFY_OUTPUT_DIR must differ from the source tree ({CWD}); "
+                "unset it to rewrite this tree in place instead."
+            )
+
+    marker = Path(out_dir, SAILIFY_MARKER)
+    fingerprint = _sailify_fingerprint()
+    forced = str2bool(os.getenv("SAILIFY_FORCE"))
+    if marker.is_file() and not forced:
+        previous = marker.read_text(encoding="utf-8")
+        if f"fingerprint: {fingerprint}\n" in previous:
+            print(
+                f"sailify: {out_dir} is already up to date ({fingerprint}); "
+                "skipping conversion. Use SAILIFY_FORCE=1 to convert anyway."
+            )
+            if not in_place:
+                _print_sailify_handover(out_dir)
+            return in_place
+        print("sailify: sources changed since the last conversion, re-converting.")
+        print(f"  recorded: {previous.strip()}")
+        print(f"  current : fingerprint: {fingerprint}")
+        print(
+            "  NOTE: this overwrites source files in the target tree; any edits "
+            "made there will be lost."
+        )
+
+    sailify_src = CWD / "third_party" / "sailify"
+    if not sailify_src.is_dir():
+        raise FileNotFoundError(
+            f"sailify source not found at {sailify_src}. "
+            "Ensure the submodule is checked out."
+        )
+    # Make sailify importable without `pip install -e`
+    if str(sailify_src) not in sys.path:
+        sys.path.insert(0, str(sailify_src))
+    from sailify.sailify_python import sailify
+
+    extra_mapping = str(CWD / "third_party" / "sailify_torch_extra_mappings.json")
+    print(f"=== sailify: {CWD} -> {'(in place)' if in_place else out_dir} ===")
+    # Drop a stale marker first: if the conversion dies halfway the tree is
+    # inconsistent, and no marker means the next run redoes it instead of
+    # trusting a half-converted tree.
+    if marker.is_file():
+        marker.unlink()
+    results = sailify(
+        project_directory=str(CWD),
+        # Empty output_directory makes sailify convert in place; a distinct dir
+        # makes it copy first, then convert.
+        output_directory="" if in_place else out_dir,
+        extra_mapping=extra_mapping,
+        verbose=True,
+    )
+    n_ok = sum(1 for r in results.values() if r.status == "ok")
+    n_skip = sum(1 for r in results.values() if r.status == "skipped")
+    print(f"sailify: {n_ok} files converted, {n_skip} files skipped.")
+
+    # Written only on success, so an interrupted run leaves no marker.
+    marker.write_text(
+        f"source: {CWD}\nin_place: {in_place}\nfingerprint: {fingerprint}\n",
+        encoding="utf-8",
+    )
+    if not in_place:
+        _print_sailify_handover(out_dir)
+    return in_place
+
+
+def _ensure_sailify_command() -> None:
+    """Make a `sailify` executable visible to the CMake run.
+
+    gloo's cmake/Sailify.cmake does
+        find_program(SAILIFY_COMMAND sailify)
+    at configure time to convert its own device sources -- that is what produces
+    gloo_hg -- and that command exists only once sailify's console_scripts entry
+    point has been installed. The PPU SDK does not ship it, despite what gloo's
+    "Ensure the PPU SDK environment is sourced" message suggests, so on a clean
+    checkout there is nothing to find and configure fails outright.
+
+    Rather than pip-installing mid-build, which would mutate the environment for
+    everything downstream, write a wrapper that runs the module straight out of
+    third_party/sailify and prepend it to PATH. CMake subprocesses inherit
+    os.environ, so find_program resolves it, and nothing outside this build is
+    touched. If no writable+executable location can be found, this raises with
+    the pip command to run by hand.
+
+    Gated on the checkout rather than on USE_SAIL: gloo includes Sailify.cmake
+    whenever its USE_PPU is on, which it inherits from torch's option(USE_PPU
+    ON) -- so a build that never set USE_SAIL can still need this.
+    """
+    if shutil.which("sailify"):
+        return  # already installed (e.g. pip install -e); leave it alone
+
+    sailify_src = CWD / "third_party" / "sailify"
+    if not (sailify_src / "sailify_cli.py").is_file():
+        # No sailify checkout at all: either not a PPU build or the submodule is
+        # missing. Say nothing and let CMake report it if it actually matters.
+        return
+
+    body = (
+        "#!/bin/sh\n"
+        # ${PYTHONPATH:+:$PYTHONPATH} keeps an unset PYTHONPATH from turning
+        # into ":<path>", whose leading empty entry Python reads as the cwd.
+        f'PYTHONPATH="{sailify_src}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        "export PYTHONPATH\n"
+        f'exec "{sys.executable}" -m sailify_cli "$@"\n'
+    )
+
+    # Check importability before bothering with a wrapper. sailify uses 3.9+
+    # builtin-generic subscripts, so on an older interpreter `import sailify`
+    # fails outright -- and `sailify --help` would not catch it, because those
+    # imports happen lazily inside the CLI. A version mismatch is also not
+    # something a different wrapper location would fix, so it belongs here
+    # rather than inside the fallback loop below.
+    try:
+        subprocess.check_output(
+            [sys.executable, "-c", "import sailify"],
+            env=dict(os.environ, PYTHONPATH=str(sailify_src)),
+            stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"sailify cannot be imported by {sys.executable}, which gloo's "
+            f"cmake/Sailify.cmake needs at configure time:\n"
+            f"{e.output.decode(errors='replace')}"
+        ) from e
+
+    # build/ is the natural home, but it is not always writable -- a tree built
+    # once as root leaves it owned by root. Fall back to a temp dir, then check
+    # the wrapper actually runs: /tmp is sometimes mounted noexec, and that
+    # would otherwise surface much later as an unexplained CMake failure.
+    for candidate in (CWD / "build" / "sailify_bin", None):
+        try:
+            if candidate is None:
+                bin_dir = Path(tempfile.mkdtemp(prefix="torch_sailify_bin_"))
+            else:
+                candidate.mkdir(parents=True, exist_ok=True)
+                bin_dir = candidate
+            wrapper = bin_dir / "sailify"
+            wrapper.write_text(body, encoding="utf-8")
+            wrapper.chmod(0o755)
+            subprocess.check_output(
+                [str(wrapper), "--help"], stderr=subprocess.STDOUT
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            report(f"-- sailify wrapper in {candidate or 'a temp dir'} unusable: {e}")
+            continue
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        report(f"-- sailify not on PATH; generated wrapper at {wrapper}")
+        return
+
+    raise RuntimeError(
+        "Could not place a runnable `sailify` wrapper, which gloo's "
+        "cmake/Sailify.cmake needs at configure time. Install it manually:\n"
+        f"    pip install -e {sailify_src} --no-deps"
+    )
+
+
+def _print_sailify_handover(out_dir: str) -> None:
+    print(
+        "\n"
+        "=========================================================\n"
+        "This tree was NOT modified and is still CUDA code, so the\n"
+        "build has to run in the converted tree:\n"
+        f"    cd {out_dir}\n"
+        "    python3 setup.py bdist_wheel\n"
+        "========================================================="
+    )
+
 def main() -> None:
     if BUILD_LIBTORCH_WHL and BUILD_PYTHON_ONLY:
         raise RuntimeError(
             "Conflict: 'BUILD_LIBTORCH_WHL' and 'BUILD_PYTHON_ONLY' can't both be 1. "
             "Set one to 0 and rerun."
         )
+
+    # SAIL mode: the sources have to be converted from CUDA to PPU before
+    # anything is compiled. Default is in-place (this tree is rewritten and the
+    # build continues on it); setting SAILIFY_OUTPUT_DIR produces a separate
+    # converted tree and hands over to it. Either way, a run whose tree already
+    # carries the marker skips conversion and builds directly.
+    if str2bool(os.getenv("USE_SAIL")) and not (CWD / SAILIFY_MARKER).exists():
+        # In-place conversion (CI) rewrites this tree and the build continues on
+        # it; out-of-place conversion produces a separate tree, so there is
+        # nothing to build here and we stop.
+        converted_in_place = run_sailify_conversion()
+        if not converted_in_place:
+            sys.exit(0)
+
+    # NOTE: PPU env init is already performed at module level (right before
+    # setup() call) so that cmake spawned by setuptools ext_modules build
+    # hook can read NCCL_INCLUDE_DIR / NCCL_LIB_DIR. Do not re-init here.
+
+    on_ppu = os.environ.get("PPU_SDK")
+    use_fa = os.environ.get("USE_FLASH_ATTENTION")
+    if use_fa in ["True", "1", "TRUE"] and on_ppu:
+        torch_root = os.path.dirname(os.path.abspath(__file__))
+        patch_root = os.path.join(torch_root, "third_party")
+        fa_root = os.path.join(patch_root, "flash-attention")
+        cutlass_root = os.path.join(patch_root, "cutlass")
+        if not os.path.exists(fa_root):
+            raise FileNotFoundError("No ppu flash-attention source code copied")
+        if not os.path.exists(cutlass_root):
+            raise FileNotFoundError("No ppu cutlass source code copied")
+
+        fa_patch_file = os.path.join(
+            patch_root, "flash_attention_namespace_config.patch"
+        )
+
+        # The CUTLASS patch is currently applied only in SAIL mode
+        # (USE_SAIL=1). It adds numeric_limits<half_t/bfloat16_t> and
+        # source-portability architecture aliases required by that mode.
+        use_sail = os.environ.get("USE_SAIL", "0") in (
+            "1",
+            "TRUE",
+            "true",
+            "ON",
+            "on",
+        )
+        apply_patch(fa_patch_file, fa_root)
+        if use_sail:
+            cutlass_patch_file = os.path.join(
+                patch_root, "cutlass_platform_numeric_limits_and_arch_aliases.patch"
+            )
+            apply_patch(cutlass_patch_file, cutlass_root)
 
     install_requires = [
         "filelock",
@@ -1716,6 +2191,7 @@ def main() -> None:
         print(e, file=sys.stderr)
         sys.exit(1)
 
+
     mirror_files_into_torchgen()
     if RUN_BUILD_DEPS:
         build_deps()
@@ -1727,6 +2203,7 @@ def main() -> None:
         packages,
         entry_points,
         extra_install_requires,
+        package_dir,
     ) = configure_extension_build()
     install_requires += extra_install_requires
 
@@ -1760,6 +2237,15 @@ def main() -> None:
         "share/cmake/ATen/*.cmake",
         "share/cmake/Caffe2/*.cmake",
         "share/cmake/Caffe2/public/*.cmake",
+        # SAIL only: the HG language modules that public/hg_native.cmake needs
+        # in order to enable_language(HG) from an installed tree. CMake installs
+        # them (see the USE_SAIL install rules in CMakeLists.txt), but this
+        # allow-list decides what actually lands in the wheel, and its globs are
+        # not recursive -- hence one entry per level, plus .cmake.in for the
+        # compiler-info template. On non-SAIL builds these simply match nothing.
+        "share/cmake/Caffe2/cmake-hgcc/Modules/*.cmake",
+        "share/cmake/Caffe2/cmake-hgcc/Modules/*.cmake.in",
+        "share/cmake/Caffe2/cmake-hgcc/Modules/Compiler/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/upstream/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/upstream/FindCUDA/*.cmake",
@@ -1826,6 +2312,10 @@ def main() -> None:
     exclude_package_data = {
         "torch": exclude_windows_libs,
     }
+    if str2bool(os.getenv("USE_SAIL")):
+        torch_package_data += [
+            ".ppu_compat/*.h",
+        ]
 
     if not BUILD_LIBTORCH_WHL:
         package_data["torchgen"] = torchgen_package_data
@@ -1834,12 +2324,23 @@ def main() -> None:
         # no extensions in BUILD_LIBTORCH_WHL mode
         ext_modules = []
 
+    # ── PPU env init BEFORE setup() triggers cmake subprocess ──
+    # setup() below (line ~1968) spawns cmake via setuptools' ext_modules
+    # build hook; cmake's FindNCCL.cmake reads NCCL_INCLUDE_DIR / NCCL_LIB_DIR
+    # at configure time. If we defer env init to main() (which runs after
+    # setup() due to `if __name__ == "__main__"` being at the very bottom),
+    # cmake has already failed with "Could NOT find NCCL".
+    # Do module-level init here, gated by PPU_SDK (same guard as main()).
+    if os.environ.get("PPU_SDK"):
+        Init_ppu_build_env()
+
     setup(
         name=TORCH_PACKAGE_NAME,
         version=TORCH_VERSION,
         ext_modules=ext_modules,
         cmdclass=cmdclass,
         packages=packages,
+        package_dir=package_dir,
         entry_points=entry_points,
         install_requires=install_requires,
         package_data=package_data,

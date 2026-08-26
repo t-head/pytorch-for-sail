@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /***************************************************************************************************
  * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause
@@ -42,7 +43,13 @@
 #include <cutlass/tensor_ref.h>
 
 #include <cutlass/arch/arch.h>
+#if defined(USE_PPU) || defined(USE_SAIL)
+// PPU CUTLASS keeps architecture-specific memory helpers in memory_ppu.h;
+// the CUDA SM75 header is not present in the PPU fork used by SAIL builds.
+#include <cutlass/arch/memory_ppu.h>
+#else
 #include <cutlass/arch/memory_sm75.h>
+#endif
 #include <cutlass/gemm/gemm.h>
 
 #include <cutlass/layout/matrix.h>
@@ -284,6 +291,11 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#if !defined(USE_PPU)
+// PPU: ArchTag Sm70 aliases to PPU0010, whose kMinComputeCapability(80) also
+// satisfies the Turing+ (>=75) specialization above, making these Volta-only
+// specializations ambiguous. Disable them under USE_PPU; the Sm80 path uses
+// the Turing&Ampere specialization.
 // Specialization for Volta A x RowMajor B tensorOp, for 32x32x4 interleaved gemm
 template<
     /// Underlying matrix multiply operator (concept: MmaTensorOp)
@@ -464,6 +476,7 @@ public:
 private:
     ElementScale const* pointer_;
 };
+#endif  // !USE_PPU
 
 ////////////////////////////////////////////////////////////////////////////////
 

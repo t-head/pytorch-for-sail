@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 
 # pyre-unsafe
@@ -293,7 +294,11 @@ def run_worker(rank, world_size):
 if __name__ == "__main__":
     """Initializing the distributed environment."""
 
-    output = _run_printable("nvidia-smi topo -m")
+    # Use nvidia-smi (CUDA) or ppu-smi (SAIL) depending on the runtime.
+    from torch._smi import get_smi_command
+
+    smi = get_smi_command()
+    output = _run_printable(f"{smi} topo -m")
     print("-------------------------------------------")
     print("                  Info                     ")
     print("-------------------------------------------")
@@ -301,7 +306,7 @@ if __name__ == "__main__":
     print(f"* PyTorch version: {torch.__version__}")
     print(f"* CUDA version: {torch.version.cuda}")
     print()
-    print("------------ nvidia-smi topo -m -----------")
+    print(f"------------ {smi} topo -m -----------")
     print()
     print(output[0])
     print("-------------------------------------------")

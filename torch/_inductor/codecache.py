@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 from __future__ import annotations
 
 import base64
@@ -2397,14 +2398,22 @@ end
                     ):
                         if torch.version.hip is None:
                             current_arch = _nvcc_arch_as_compile_option()
-                            cmd = (
-                                # pyrefly: ignore [unbound-name]
-                                f"{_cuda_compiler()} -fatbin {asm_file} -o {cubin_file} "
-                                # Triton only allows generating PTX version as same as the current arch
-                                f"-gencode arch=compute_{current_arch},code=compute_{current_arch} "
-                                # Include SASS for the current specific arch
-                                f"-gencode arch=compute_{current_arch},code=sm_{current_arch} "
-                            )
+                            if _is_ppu():
+                                ppu_arch = _ppu_arch_from_cuda_arch(current_arch)
+                                cmd = (
+                                    # pyrefly: ignore [unbound-name]
+                                    f"{_ppu_compiler()} --fatbin {asm_file} -o {cubin_file} "
+                                    f"--gpu-architecture={ppu_arch} "
+                                )
+                            else:
+                                cmd = (
+                                    # pyrefly: ignore [unbound-name]
+                                    f"{_cuda_compiler()} -fatbin {asm_file} -o {cubin_file} "
+                                    # Triton only allows generating PTX version as same as the current arch
+                                    f"-gencode arch=compute_{current_arch},code=compute_{current_arch} "
+                                    # Include SASS for the current specific arch
+                                    f"-gencode arch=compute_{current_arch},code=sm_{current_arch} "
+                                )
                             try:
                                 subprocess.run(
                                     cmd.split(),
@@ -3742,6 +3751,39 @@ def _load_triton_kernel_from_source(
     return getattr(PyCodeCache.load(source_code), kernel_name)
 
 
+def _is_ppu() -> bool:
+    """Check if we are running on PPU platform."""
+    from torch.utils import cpp_extension
+    return cpp_extension.IS_PPU_EXTENSION
+
+
+def _ppu_compiler() -> str | None:
+    """Find the hgcc compiler path for PPU platform."""
+    from torch.utils import cpp_extension
+    if cpp_extension.PPU_HOME is not None:
+        hgcc = os.path.join(cpp_extension.PPU_HOME, "bin", "hgcc")
+        if os.path.exists(hgcc):
+            return hgcc
+    # Fallback: check if hgcc is in PATH
+    hgcc_path = shutil.which("hgcc")
+    if hgcc_path is not None:
+        return hgcc_path
+    return "hgcc"
+
+
+def _ppu_arch_from_cuda_arch(arch: str) -> str:
+    """Convert CUDA compute capability (e.g. '80') to PPU arch name (e.g. 'ppu_10')."""
+    from torch.utils.cpp_extension import _cuda_arch_to_ppu
+    # arch is like '80' or '80a' or '100a'
+    arch_clean = arch.rstrip('a')
+    if len(arch_clean) >= 2:
+        # Minor is always the last digit; major is everything before it
+        # e.g. '80' → major=8, minor=0; '100' → major=10, minor=0
+        major, minor = int(arch_clean[:-1]), int(arch_clean[-1])
+        return _cuda_arch_to_ppu(f"{major}.{minor}")
+    return "ppu_10"
+
+
 def _cuda_compiler() -> str | None:
     if cuda_env.nvcc_exist(config.cuda.cuda_cxx):
         return config.cuda.cuda_cxx
@@ -3784,11 +3826,12 @@ def _clone_cutlass_paths(build_root: str) -> list[str]:
 
 def _cutlass_include_paths() -> list[str]:
     cutlass_path = _cutlass_path()
-    return [
+    paths = [
         # Use realpath to get canonical absolute paths, in order not to mess up cache keys
         os.path.realpath(os.path.join(cutlass_path, path))
         for path in _cutlass_paths()
     ]
+    return paths
 
 
 @torch_key_cache
@@ -3953,6 +3996,178 @@ def cuda_compile_command(
     return res
 
 
+# ---------------------------------------------------------------------------
+# PPU (hgcc) compilation functions — mirrors the CUDA/nvcc functions above
+# but uses hgcc compiler, PPU arch flags, and hggc/hggcrt1 libraries.
+# Dispatch happens at call sites (CUDACodeCache, cutlass_utils) via _is_ppu().
+# ---------------------------------------------------------------------------
+
+
+def _ppu_extra_include_paths() -> list[str]:
+    """Return PPU-specific include paths needed for CUTLASS compilation.
+
+    PPU CUTLASS headers are sailified and reference hggc/* paths,
+    so PPU_SDK/include must be in the include search path.
+    """
+    paths: list[str] = []
+    from torch.utils import cpp_extension
+    paths.append(os.path.realpath(cpp_extension._join_ppu_home("include")))
+    # Also add the .ppu_compat directory for compatible_wrapper.h
+    compat_dir = os.path.join(os.path.dirname(torch.__file__), "utils", ".ppu_compat")
+    if os.path.isdir(compat_dir):
+        paths.append(os.path.realpath(compat_dir))
+    return paths
+
+
+def _ppu_include_paths() -> list[str]:
+    """Include paths for PPU CUTLASS compilation (CUTLASS paths + PPU SDK)."""
+    cutlass_path = _cutlass_path()
+    paths = [
+        os.path.realpath(os.path.join(cutlass_path, path))
+        for path in _cutlass_paths()
+    ]
+    paths.extend(_ppu_extra_include_paths())
+    return paths
+
+
+def _ppu_lib_options() -> list[str]:
+    """Library options for PPU CUTLASS compilation (hggc + hggcrt1)."""
+    _set_gpu_runtime_env()
+    from torch.utils import cpp_extension
+
+    lpaths = cpp_extension.library_paths(device_type="cuda")
+    if use_re_build():
+        lpaths += [
+            build_paths.sdk_lib,
+            os.path.join(build_paths.sdk_lib, "stubs"),
+        ]
+    extra_ldflags: list[str] = []
+    if is_linux():
+        # PPU does not need _transform_cuda_paths (no stubs/lib64 layout issues)
+        for path in lpaths:
+            if "torch/lib" in path:
+                continue
+            extra_ldflags.append(f"-L{path}")
+            if os.path.basename(path) != "stubs":
+                extra_ldflags.extend(["-Xlinker", f"-rpath={path}"])
+        # PPU uses libhggc.so (driver) and libhggcrt1.so (runtime)
+        extra_ldflags.append("-lhggc")
+        extra_ldflags.append("-lhggcrt1")
+    else:
+        raise NotImplementedError(
+            "Unsupported env, failed to find ppu libs! Currently only Linux is supported."
+        )
+    return extra_ldflags
+
+
+def _ppu_compiler_options() -> list[str]:
+    """Compiler options for PPU CUTLASS compilation (hgcc).
+
+    Builds options using PPU arch (--gpu-architecture=ppu_XX) and
+    __HGGC_NO_HALF_* macros, then runs _sailify_nvcc_flags to convert
+    any remaining nvcc-specific flags (e.g. --ptxas-options → --llvm-options)
+    via the _NVCC_HGCC_OPTIONS mapping table.
+    """
+    arch = _nvcc_arch_as_compile_option()
+    ppu_arch = _ppu_arch_from_cuda_arch(arch)
+    options = [
+        "-t=0",
+        "-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1",
+        "-DCUTLASS_ENABLE_SM90_EXTENDED_MMA_SHAPES=1",
+        "-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED",
+        # PPU half-type compatibility macros (replaces __CUDA_NO_HALF_*)
+        "-D__HGGC_NO_HALF_OPERATORS__",
+        "-D__HGGC_NO_HALF_CONVERSIONS__",
+        "-D__HGGC_NO_BFLOAT16_CONVERSIONS__",
+        "-D__HGGC_NO_HALF2_OPERATORS__",
+        "-w",
+        f"--gpu-architecture={ppu_arch}",
+        config.cuda.compile_opt_level,
+        "-std=c++17",
+        "--expt-relaxed-constexpr",
+        "-DNDEBUG",
+    ]
+    if config.is_fbcode():
+        options.extend(["-ccbin", os.path.dirname(build_paths.gcc)])
+    if config.cuda.enable_debug_info:
+        options.extend(["-lineinfo", "-g", "-DCUTLASS_DEBUG_TRACE_LEVEL=1"])
+    if config.cuda.enable_ptxas_info:
+        options.extend(
+            [
+                "--keep",
+                "--ptxas-options=--warn-on-local-memory-usage",
+                "--ptxas-options=--warn-on-spills",
+                "--resource-usage",
+                "--source-in-ptx",
+            ]
+        )
+    if config.cuda.use_fast_math:
+        options.extend(
+            [
+                "--use_fast_math",
+                "-DCUTLASS_USE_TANH_FOR_SIGMOID=1",
+            ]
+        )
+    # Convert nvcc-specific flags to hgcc equivalents
+    # using the _NVCC_HGCC_OPTIONS mapping table (e.g.
+    # --ptxas-options → --llvm-options, --source-in-ptx → dropped, etc.)
+    from torch.utils.cpp_extension import _sailify_nvcc_flags
+    options = _sailify_nvcc_flags(options)
+    return options
+
+
+def _ppu_compile_command(
+    src_files: list[str],
+    dst_file: str,
+    dst_file_ext: str,
+    extra_args: list[str] | None = None,
+) -> str:
+    """Compile command for PPU CUTLASS compilation (hgcc).
+
+    This is the PPU equivalent of cuda_compile_command, using hgcc compiler,
+    PPU include paths, PPU lib options, and PPU compiler options.
+    """
+    if extra_args is None:
+        extra_args = []
+    if use_re_build():
+        build_path = os.path.dirname(dst_file)
+        include_paths = _clone_cutlass_paths(build_path)
+        include_paths.extend(_ppu_extra_include_paths())
+        src_files = [os.path.basename(src_file) for src_file in src_files]
+        dst_file = os.path.basename(dst_file)
+    else:
+        include_paths = _ppu_include_paths()
+    ppu_lib_options = _ppu_lib_options()
+    host_compiler_options = _nvcc_host_compiler_options()
+    compiler_options = _ppu_compiler_options()
+    options = (
+        compiler_options
+        + extra_args
+        + [
+            f"-Xcompiler {opt}" if "=" in opt else f"-Xcompiler={opt}"
+            for opt in host_compiler_options
+        ]
+        + ["-I" + path for path in include_paths]
+        + ppu_lib_options
+    )
+    src_file = " ".join(src_files)
+    res = ""
+    if dst_file_ext == "o":
+        res = f"{_ppu_compiler()} {' '.join(options)} -c -o {dst_file} {src_file}"
+    elif dst_file_ext == "so":
+        options.append("-shared")
+        res = f"{_ppu_compiler()} {' '.join(options)} -o {dst_file} {src_file}"
+    elif dst_file_ext == "exe":
+        res = f"{_ppu_compiler()} {' '.join(options)} -o {dst_file} {src_file}"
+    else:
+        raise NotImplementedError(f"Unsupported output file suffix {dst_file_ext}!")
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("PPU command: %s", res)
+    else:
+        autotuning_log.debug("PPU command: %s", res)
+    return res
+
+
 class DLLWrapper:
     """A wrapper for a dynamic library."""
 
@@ -4059,6 +4274,14 @@ class CUDACodeCache:
     def cache_clear() -> None:
         CUDACodeCache.cache.clear()
         CUDACodeCache.aot_kernels_o.clear()
+        # write() is @lru_cache'd on (source_code, dst_file_ext) and returns a path
+        # rooted at whatever cache_dir() was current when it first ran. fresh_cache()
+        # swaps in a new temp dir and removes the old one, so a memoized path now
+        # points at a directory that no longer exists -- and because the memo
+        # short-circuits write(), nothing gets written into the new dir either.
+        # Compiling the same source twice in one process then fails on
+        # open(input_path) rather than in the compiler.
+        CUDACodeCache.write.cache_clear()
 
     @staticmethod
     @lru_cache(maxsize=4)
@@ -4102,24 +4325,44 @@ class CUDACodeCache:
         """
 
         if config.cuda.cutlass_hash_with_compile_cmd:
-            cuda_command = repr(
-                cuda_compile_command(["dummy_input"], "dummy_output", dst_file_ext)
-            )
+            if _is_ppu():
+                cuda_command = repr(
+                    _ppu_compile_command(["dummy_input"], "dummy_output", dst_file_ext)
+                )
+            else:
+                cuda_command = repr(
+                    cuda_compile_command(["dummy_input"], "dummy_output", dst_file_ext)
+                )
             extra = cuda_command
         else:
-            extra = repr(
-                [
-                    # nvcc and cuda hash
-                    _cuda_compiler(),
-                    # cutlass flags and gcc hash
-                    _nvcc_compiler_options(),
-                    # flags
-                    _nvcc_host_compiler_options(),
-                    # cutlass key
-                    cutlass_key(),
-                    # hack to deal with AOTI .o compilation
-                ]
-            )
+            if _is_ppu():
+                extra = repr(
+                    [
+                        # hgcc and ppu hash
+                        _ppu_compiler(),
+                        # cutlass flags and hgcc hash
+                        _ppu_compiler_options(),
+                        # flags
+                        _nvcc_host_compiler_options(),
+                        # cutlass key
+                        cutlass_key(),
+                        # hack to deal with AOTI .o compilation
+                    ]
+                )
+            else:
+                extra = repr(
+                    [
+                        # nvcc and cuda hash
+                        _cuda_compiler(),
+                        # cutlass flags and gcc hash
+                        _nvcc_compiler_options(),
+                        # flags
+                        _nvcc_host_compiler_options(),
+                        # cutlass key
+                        cutlass_key(),
+                        # hack to deal with AOTI .o compilation
+                    ]
+                )
         key, input_path = write(source_code, cls._SOURCE_CODE_SUFFIX, extra=extra)
         return key, input_path
 
@@ -4180,9 +4423,14 @@ class CUDACodeCache:
                     )
                     raise exc.CUDACompileError(cmd_parts, error_output)
                 if not os.path.exists(output_path):
-                    cmd = cuda_compile_command(
-                        src_files, output_path, dst_file_ext, extra_args
-                    )
+                    if _is_ppu():
+                        cmd = _ppu_compile_command(
+                            src_files, output_path, dst_file_ext, extra_args
+                        )
+                    else:
+                        cmd = cuda_compile_command(
+                            src_files, output_path, dst_file_ext, extra_args
+                        )
                     with open(input_path, "a") as f:
                         f.write("\n")
                         f.write(f"// CUDA {operation_name} cmd\n// {cmd}\n")

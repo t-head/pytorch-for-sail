@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 cmake_minimum_required(VERSION 3.27 FATAL_ERROR)
 
 # Use compiler ID "AppleClang" instead of "Clang" for XCode. Not setting this
@@ -246,8 +247,28 @@ else()
   set(_USE_CUDA_EXPLICITLY_SET FALSE)
 endif()
 
+option(USE_PPU "Build for PPU" ON)
 option(USE_CUDA "Use CUDA" ON)
-
+# PPU SAIL mode: reuse the CUDA build system (cmake + USE_CUDA macro) but
+# link the PPU native SDK (PPU_SDK/lib, hggc*/ac* libraries) instead of the CUDA
+# compatibility layer (PPU_SDK/CUDA_SDK/lib64). Default OFF => CUDA-compatible.
+option(USE_SAIL "PPU: use native PPU SDK instead of CUDA compatibility layer" OFF)
+# PPU SAIL is a sub-mode of the PPU platform that reuses the CUDA build system;
+# it is NOT orthogonal to USE_PPU / USE_CUDA: enabling USE_SAIL implies both.
+# Derive them automatically so users only need to flip a single switch, and to
+# avoid a half-configured state (e.g. USE_SAIL=ON but USE_PPU=OFF) where bare
+# `if(USE_SAIL)` blocks fire while `if(USE_PPU AND USE_SAIL)` blocks are skipped
+# and the -DUSE_SAIL macro (defined only under if(USE_PPU)) is never set.
+if(USE_SAIL)
+  if(NOT USE_PPU)
+    set(USE_PPU ON CACHE BOOL "Build for PPU (forced ON by USE_SAIL)" FORCE)
+    message(STATUS "USE_SAIL=ON -> forcing USE_PPU=ON")
+  endif()
+  if(NOT USE_CUDA)
+    set(USE_CUDA ON CACHE BOOL "Use CUDA (forced ON: SAIL reuses CUDA build system)" FORCE)
+    message(STATUS "USE_SAIL=ON -> forcing USE_CUDA=ON")
+  endif()
+endif()
 option(USE_XPU "Use XPU" ON)
 cmake_dependent_option(
   BUILD_LAZY_CUDA_LINALG "Build cuda linalg ops as separate library" ON
@@ -399,6 +420,21 @@ endif()
 cmake_dependent_option(USE_PRIORITIZED_TEXT_FOR_LD "Use prioritized text linker for ld."
   "${USE_PRIORITIZED_TEXT_DEFAULT}" "CPU_INTEL OR CPU_AARCH64 OR CPU_POWER" OFF)
 
+if(USE_PPU)
+  add_definitions(-DUSE_PPU)
+  add_definitions(-DUSE_HGGC)
+  add_definitions(-DHAS_PYTORCH)
+  add_definitions(-DUSE_PYTORCH_SDPA)
+  # USE_SAIL distinguishes the two PPU backends: SAIL uses native PPU SDK
+  # (libhgrtc, libhgml), non-SAIL uses CUDA-compatible wrappers.
+  # USE_CUDA macro is retained in both modes for source compatibility.
+  if(USE_SAIL)
+    add_definitions(-DUSE_SAIL)
+    message(STATUS "PPU build mode: SAIL (PPU native SDK; USE_CUDA macro retained)")
+  else()
+    message(STATUS "PPU build mode: CUDA-compatible (PPU CUDA_SDK wrappers)")
+  endif()
+endif()
 option(USE_MIMALLOC "Use mimalloc" OFF)
 # Enable third party mimalloc library to improve memory allocation performance
 # on Windows and AArch64.
@@ -1086,10 +1122,12 @@ endif()
 if(NOT MSVC)
   string(APPEND CMAKE_CXX_FLAGS " -O2 -fPIC")
 
-  # This prevents use of `c10::optional`, `c10::nullopt` etc within the codebase
-  string(APPEND CMAKE_CXX_FLAGS " -DC10_NODEPRECATED")
-  string(APPEND CMAKE_CUDA_FLAGS " -DC10_NODEPRECATED")
-  string(APPEND CMAKE_OBJCXX_FLAGS " -DC10_NODEPRECATED")
+  if(NOT USE_PPU)
+    # This prevents use of `c10::optional`, `c10::nullopt` etc within the codebase
+    string(APPEND CMAKE_CXX_FLAGS " -DC10_NODEPRECATED")
+    string(APPEND CMAKE_CUDA_FLAGS " -DC10_NODEPRECATED")
+    string(APPEND CMAKE_OBJCXX_FLAGS " -DC10_NODEPRECATED")
+  endif()
 
   # Eigen fails to build with some versions, so convert this to a warning
   # Details at http://eigen.tuxfamily.org/bz/show_bug.cgi?id=1459
@@ -1358,6 +1396,24 @@ if(BUILD_SHARED_LIBS)
           ${PROJECT_SOURCE_DIR}/cmake/public/LoadHIP.cmake
     DESTINATION share/cmake/Caffe2/public
     COMPONENT dev)
+  if(USE_SAIL)
+    # Ship the SAIL counterpart of public/cuda.cmake, plus the HG language
+    # modules it needs, so that a downstream find_package(Torch) works against
+    # the installed tree alone -- without them Caffe2Config.cmake could only
+    # include cuda.cmake, which cannot run without nvcc.
+    #
+    # cmake-hgcc keeps its modules in cmake/Modules; installing that directory
+    # (rather than its parent) flattens the path to cmake-hgcc/Modules, which is
+    # what hg_native.cmake's installed-layout candidate expects.
+    install(
+      FILES ${PROJECT_SOURCE_DIR}/cmake/public/hg_native.cmake
+      DESTINATION share/cmake/Caffe2/public
+      COMPONENT dev)
+    install(
+      DIRECTORY ${PROJECT_SOURCE_DIR}/third_party/cmake-hgcc/cmake/Modules
+      DESTINATION share/cmake/Caffe2/cmake-hgcc
+      COMPONENT dev)
+  endif()
   install(
     DIRECTORY ${PROJECT_SOURCE_DIR}/cmake/Modules_CUDA_fix
     DESTINATION share/cmake/Caffe2/

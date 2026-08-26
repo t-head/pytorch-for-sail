@@ -62,7 +62,7 @@ from torch.fx.passes.regional_inductor import _needs_inductor_compile
 from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_flatten, tree_map_only
-
+from torch.testing._utils import is_ppu
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1674,6 +1674,11 @@ def is_big_gpu(index_or_device: Union[int, torch.device] = 0) -> bool:
         return True
 
     min_sms = 16 if device.type == "xpu" else 68  # 3080
+    if is_ppu() and torch.cuda.is_available():
+        compute_cap = torch.cuda.get_device_capability()
+        # 810E，sm80
+        if compute_cap == (8, 0):
+            min_sms = 64
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
         log.warning(

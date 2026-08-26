@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: inductor"]
 # ruff: noqa: F841
 import contextlib
@@ -4318,12 +4319,15 @@ if HAS_CUDA_AND_TRITON:
             def foo(x, y):
                 # partition 1
                 output1 = torch.empty_like(x)
-                add_kernel[(4,)](x, y, output1, n_elements=128, BLOCK_SIZE=16)
+                # the grid must cover all n_elements: with a smaller grid the tail of
+                # the empty_like output is never written, so comparing against the
+                # eager result would compare recycled allocator memory
+                add_kernel[(8,)](x, y, output1, n_elements=128, BLOCK_SIZE=16)
                 output1_cpu = output1.cpu() + 1
                 # partition 2 should reuse the user-defined kernel
                 x2 = output1_cpu.to("cuda")
                 output2 = torch.empty_like(x)
-                add_kernel[(4,)](x2, y, output2, n_elements=128, BLOCK_SIZE=16)
+                add_kernel[(8,)](x2, y, output2, n_elements=128, BLOCK_SIZE=16)
                 return output1, output2
 
             compiled_foo = torch.compile(foo)

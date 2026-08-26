@@ -1,8 +1,10 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["oncall: export"]
 # ruff: noqa: F841
 # flake8: noqa
 
 import itertools
+import os
 import subprocess
 import sys
 import unittest
@@ -21,6 +23,7 @@ from torch.testing._internal.common_methods_invocations import (
     xfail,
 )
 from torch.testing._internal.common_utils import run_tests, skipIfRocm, TestCase
+from torch.testing._utils import is_ppu
 from torch.utils import _pytree as pytree
 
 
@@ -63,6 +66,35 @@ fake_export_failures = {
     xfail("nn.functional.multi_margin_loss"),
     xfail("nonzero"),
 }
+
+# PPU in SAIL mode deviates from the CUDA expectations above in two ways.
+# - The ops below do export successfully here -- the OptionalDeviceGuard group in
+#   particular relies on CUDA-specific behaviour -- so upstream's xfail turns into
+#   an unexpected success, i.e. a reported failure. The rest of the list (histogram,
+#   masked.*) still fails as upstream expects.
+# - sparse.sampled_addmm must not even be executed: the PPU sparse library prints
+#   "acsparseSDDMM_preprocess is not supported." and terminates the process rather
+#   than raising, so xfail cannot catch it and every case after it in the file is
+#   silently skipped. Downgrading it to skip keeps the rest of the file running.
+if is_ppu():
+    _ppu_unexpected_successes = {
+        "geqrf",
+        "nn.functional.grid_sample",
+        "to_sparse",
+        "__getitem__",
+        "nn.functional.batch_norm",
+        "nn.functional.instance_norm",
+        "nn.functional.multi_margin_loss",
+        "nonzero",
+    }
+    fake_export_failures = {
+        entry
+        for entry in fake_export_failures
+        if entry[0] not in _ppu_unexpected_successes
+    }
+    export_failures = {
+        entry for entry in export_failures if entry[0] != "sparse.sampled_addmm"
+    } | {skip("sparse.sampled_addmm")}
 
 fake_decomposition_failures = {
     xfail("linalg.matrix_rank"),
@@ -141,6 +173,20 @@ selected_ops = {
 selected_op_db = [op for op in op_db if op.name in selected_ops]
 
 
+def _no_visible_devices_env() -> dict:
+    """Environment for a child process that must not see any accelerator.
+
+    The parent environment has to be inherited rather than replaced: in SAIL
+    mode, the PPU SDK entries (PPU_SDK, PATH) are needed to import torch at all.
+    Masking goes through CUDA_VISIBLE_DEVICES and, on PPU, through
+    HGGC_VISIBLE_DEVICES, the variable the HG native runtime (hggcrt) parses.
+    """
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES="")
+    if is_ppu():
+        env["HGGC_VISIBLE_DEVICES"] = ""
+    return env
+
+
 class TestExportOnFakeCuda(TestCase):
     # In CI, this test runs on a CUDA machine with cuda build
     # We set CUDA_VISIBLE_DEVICES="" to simulate a CPU machine with cuda build
@@ -204,7 +250,7 @@ for op in ops:
             (
                 subprocess.check_output(
                     [sys.executable, "-c", test_script],
-                    env={"CUDA_VISIBLE_DEVICES": ""},
+                    env=_no_visible_devices_env(),
                 )
             )
             .decode("ascii")
@@ -268,7 +314,7 @@ cuda_calls_behavior_unchanged()
             (
                 subprocess.check_output(
                     [sys.executable, "-c", test_script],
-                    env={"CUDA_VISIBLE_DEVICES": ""},
+                    env=_no_visible_devices_env(),
                 )
             )
             .decode("ascii")

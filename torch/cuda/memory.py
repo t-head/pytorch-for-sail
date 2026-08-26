@@ -331,7 +331,7 @@ def memory_stats(device: "Device" = None) -> dict[str, Any]:
     - ``"num_sync_all_streams"``: number of ``synchronize_and_free_events`` calls.
     - ``"num_device_alloc"``: number of CUDA allocation calls. This includes both
       cuMemMap and cudaMalloc.
-    - ``"num_device_free"``: number of CUDA free calls. This includes both cuMemUnmap
+    - ``"num_device_free"``: number of CUDA deallocation calls. This includes both cuMemUnmap
       and cudaFree.
 
     The caching allocator can be configured via ENV to not split blocks larger than a
@@ -463,7 +463,7 @@ def host_memory_stats() -> dict[str, Any]:
 
      - ``"num_host_alloc"``: number of CUDA allocation calls. This includes both
        cudaHostAlloc and cudaHostRegister.
-     - ``"num_host_free"``: number of CUDA free calls. This includes both cudaHostFree
+     - ``"num_host_free"``: number of CUDA deallocation calls. This includes both cudaHostFree
        and cudaHostUnregister.
 
      Finally, we also provide some simple timing counters:

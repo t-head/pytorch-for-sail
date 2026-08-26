@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /*
  * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
@@ -9,8 +10,13 @@
 
 #include <cutlass/functional.h>
 #include <cutlass/gemm/warp/mma_simt_tile_iterator.h>
+// PPU: sm70/sm80 tile iterator 映射到 ppu0010（sm80 以下不单独实例化）
+#if defined(USE_PPU)
+#include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_ppu0010.h>
+#else
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_sm70.h>
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_sm80.h>
+#endif
 #include <cutlass/matrix_shape.h>
 
 /*
@@ -306,6 +312,7 @@ struct DefaultMmaAccumLambdaIterator<
   using Iterator = AccumLambdaIteratorSimt<WarpIterator, accum_t, kWarpSize>;
 };
 
+#if !defined(USE_PPU)
 // TensorOp - Volta
 template <typename S1, typename S2, typename accum_t, int kWarpSize>
 struct DefaultMmaAccumLambdaIterator<
@@ -326,6 +333,7 @@ struct DefaultMmaAccumLambdaIterator<
           cutlass::MatrixShape<1, 1>>;
   using Iterator = AccumLambdaIteratorSm70<WarpIterator, accum_t, kWarpSize>;
 };
+#endif // !defined(USE_PPU): PPU never selects the Volta accum-lambda iterator; fork removed MmaVolta* types
 
 // TensorOp - Sm75+
 template <

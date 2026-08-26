@@ -1,0 +1,5 @@
+[
+    ["NVRTC_STUB2(compatiblertcVersion, int*, int*)",
+     "hgrtcResult compatiblertcVersion(int* major, int* minor) { return ::compatiblertcVersion(major, minor); }"],
+    ["NO_ROCM(::cuda)", "NO_ROCM(::hggc)"]
+]

@@ -72,7 +72,7 @@ enum class ncclDataType {
   NumTypes = 10
 };
 
-// RAII helper class to manage NCCL group API and CUDA free mutex.
+// RAII helper class to manage NCCL group API and CUDA deallocation mutex.
 // The destructor is allowed to throw since this helper class only
 // manages group and lock lifetimes.
 struct TORCH_CUDA_CPP_API AutoNcclGroup {

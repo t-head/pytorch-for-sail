@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Prints accumulated Caffe2 configuration summary
 function(caffe2_print_configuration_summary)
   message(STATUS "")
@@ -79,6 +80,9 @@ function(caffe2_print_configuration_summary)
     message(STATUS "    CUDA version        : ${CUDA_VERSION}")
     message(STATUS "    USE_FLASH_ATTENTION : ${USE_FLASH_ATTENTION}")
     message(STATUS "    USE_MEM_EFF_ATTENTION : ${USE_MEM_EFF_ATTENTION}")
+    if(USE_PPU)
+      message(STATUS "    USE_SAIL            : ${USE_SAIL}")
+    endif()
     if(${USE_CUDNN})
       message(STATUS "    cuDNN version       : ${CUDNN_VERSION}")
     endif()

@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 r"""
 This package adds support for CUDA tensor types.
@@ -46,6 +47,9 @@ try:
     from torch._C import _cudart  # type: ignore[attr-defined]
 except ImportError:
     _cudart = None
+
+# PPU support - detect PPU environment via PPU_SDK environment variable
+USE_PPU = os.getenv("PPU_SDK") is not None
 
 _initialized = False
 _tls = threading.local()
@@ -254,6 +258,9 @@ def _extract_arch_version(arch_string: str) -> int:
 
 
 def _check_capability():
+    if USE_PPU:  # on PPU we don't want this check
+        return
+
     incompatible_gpu_warn = """
     Found GPU%d %s which is of cuda capability %d.%d.
     Minimum and Maximum cuda capability supported by this version of PyTorch is
@@ -756,6 +763,18 @@ def _parse_visible_devices() -> Union[list[int], list[str]]:
     r"""Parse CUDA_VISIBLE_DEVICES environment variable."""
     var = os.getenv("CUDA_VISIBLE_DEVICES")
 
+    if _is_sail_mode():
+        # PPU's native runtime (hggcrt) masks devices through
+        # HGGC_VISIBLE_DEVICES, so honour it here as well: otherwise
+        # device_count() would keep reporting every physical device while the
+        # runtime only exposes the selected ones. CUDA_VISIBLE_DEVICES stays
+        # effective (both for the CUDA-compat mode and as a fallback here), and
+        # the PPU-native variable wins when both are set, mirroring how
+        # HIP_VISIBLE_DEVICES takes precedence on ROCm.
+        hggc_devices = os.getenv("HGGC_VISIBLE_DEVICES")
+        if hggc_devices is not None:
+            var = hggc_devices
+
     if torch.version.hip:
         hip_devices = os.getenv("HIP_VISIBLE_DEVICES")
         rocr_devices = os.getenv("ROCR_VISIBLE_DEVICES")
@@ -838,8 +857,89 @@ def _raw_device_count_amdsmi() -> int:
     return len(socket_handles)
 
 
+def _is_sail_mode() -> bool:
+    # SAIL (PPU) mode is fixed at build time and recorded in
+    # torch.version.sail (non-None only for USE_SAIL builds), mirroring how
+    # torch.version.hip marks ROCm builds. Read the marker directly from the
+    # generated, dependency-free torch/version.py (which never imports torch);
+    # fall back to False when it is absent (e.g. an uncompiled source tree).
+    try:
+        from torch.version import sail as _sail
+    except Exception:
+        return False
+    return _sail is not None
+
+
+def _raw_device_count_hgml() -> int:
+    r"""Return number of devices as reported by HGML (PPU SDK libhgml.so)
+    or negative value if HGML discovery/initialization failed.
+    Used in SAIL mode as the NVML equivalent for PPU devices."""
+    from ctypes import byref, c_uint, CDLL
+
+    try:
+        hgml_h = CDLL("libhgml.so")
+    except OSError:
+        warnings.warn("Can't load libhgml.so", stacklevel=2)
+        return -1
+    rc = hgml_h.hgmlInit()
+    if rc != 0:
+        warnings.warn("Can't initialize HGML", stacklevel=2)
+        return -1
+    dev_count = c_uint(0)
+    rc = hgml_h.hgmlDeviceGetCount(byref(dev_count))
+    if rc != 0:
+        warnings.warn("Can't get hgml device count", stacklevel=2)
+        return -1
+    hgml_h.hgmlShutdown()
+    del hgml_h
+    return dev_count.value
+
+
+def _raw_device_uuid_hgml() -> Optional[list[str]]:
+    r"""Return list of device UUIDs as reported by HGML (PPU SDK libhgml.so)
+    or None if HGML discovery/initialization failed.
+    Used in SAIL mode as the NVML equivalent for PPU devices."""
+    from ctypes import byref, c_uint, c_void_p, CDLL, create_string_buffer
+
+    try:
+        hgml_h = CDLL("libhgml.so")
+    except OSError:
+        warnings.warn("Can't load libhgml.so", stacklevel=2)
+        return None
+    rc = hgml_h.hgmlInit()
+    if rc != 0:
+        warnings.warn("Can't initialize HGML", stacklevel=2)
+        return None
+    dev_count = c_uint(0)
+    rc = hgml_h.hgmlDeviceGetCount(byref(dev_count))
+    if rc != 0:
+        warnings.warn("Can't get hgml device count", stacklevel=2)
+        return None
+    uuids: list[str] = []
+    for idx in range(dev_count.value):
+        dev_id = c_void_p()
+        rc = hgml_h.hgmlDeviceGetHandleByIndex(idx, byref(dev_id))
+        if rc != 0:
+            warnings.warn("Can't get hgml device handle", stacklevel=2)
+            return None
+        buf_len = 96
+        buf = create_string_buffer(buf_len)
+        rc = hgml_h.hgmlDeviceGetUUID(dev_id, buf, buf_len)
+        if rc != 0:
+            warnings.warn("Can't get hgml device UUID", stacklevel=2)
+            return None
+        uuids.append(buf.raw.decode("ascii").strip("\0"))
+    hgml_h.hgmlShutdown()
+    del hgml_h
+    return uuids
+
+
 def _raw_device_count_nvml() -> int:
-    r"""Return number of devices as reported by NVML or negative value if NVML discovery/initialization failed."""
+    r"""Return number of devices as reported by NVML or negative value if NVML discovery/initialization failed.
+    In SAIL mode, delegates to HGML (libhgml.so) instead of NVML."""
+    if _is_sail_mode():
+        return _raw_device_count_hgml()
+
     from ctypes import byref, c_int, CDLL
 
     nvml_h = CDLL("libnvidia-ml.so.1")
@@ -893,7 +993,11 @@ def _raw_device_uuid_amdsmi() -> Optional[list[str]]:
 
 
 def _raw_device_uuid_nvml() -> Optional[list[str]]:
-    r"""Return list of device UUID as reported by NVML or None if NVM discovery/initialization failed."""
+    r"""Return list of device UUID as reported by NVML or None if NVM discovery/initialization failed.
+    In SAIL mode, delegates to HGML (libhgml.so) instead of NVML."""
+    if _is_sail_mode():
+        return _raw_device_uuid_hgml()
+
     from ctypes import byref, c_int, c_void_p, CDLL, create_string_buffer
 
     nvml_h = CDLL("libnvidia-ml.so.1")
@@ -1056,6 +1160,8 @@ def device_count() -> int:
         return _cached_device_count
     # bypass _device_count_nvml() if rocm (not supported)
     nvml_count = _device_count_amdsmi() if torch.version.hip else _device_count_nvml()
+    # SAIL mode uses HGML (via _device_count_nvml) instead of NVML,
+    # providing the same fork-safe device counting without CUDA driver init.
     r = torch._C._cuda_getDeviceCount() if nvml_count < 0 else nvml_count
     # NB: Do not cache the device count prior to CUDA initialization, because
     # the number of devices can change due to changes to CUDA_VISIBLE_DEVICES

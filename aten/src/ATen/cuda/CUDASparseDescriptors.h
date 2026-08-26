@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #pragma once
 
 #include <ATen/Tensor.h>
@@ -97,8 +98,6 @@ class TORCH_CUDA_CPP_API CuSparseMatDescriptor
   }
 };
 
-#if AT_USE_HIPSPARSE_TRIANGULAR_SOLVE()
-
 class TORCH_CUDA_CPP_API CuSparseBsrsv2Info
     : public CuSparseDescriptor<bsrsv2Info, &cusparseDestroyBsrsv2Info> {
  public:
@@ -118,8 +117,6 @@ class TORCH_CUDA_CPP_API CuSparseBsrsm2Info
     descriptor_.reset(raw_descriptor);
   }
 };
-
-#endif // AT_USE_HIPSPARSE_TRIANGULAR_SOLVE
 
 cusparseIndexType_t getCuSparseIndexType(const c10::ScalarType& scalar_type);
 

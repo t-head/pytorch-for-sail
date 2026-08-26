@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: cpp"]
 
 """
@@ -20,16 +21,24 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 from torch.testing._internal.common_utils import IS_WINDOWS, run_tests, TestCase
 from torch.utils.cpp_extension import (
+    CUDA_COMPILER,
     CUDA_HOME,
     include_paths as torch_include_paths,
+    PPU_HOME,
     ROCM_HOME,
 )
 
 
-GPU_HOME = CUDA_HOME or ROCM_HOME
+# PPU_HOME has to win over CUDA_HOME: PPU SAIL builds keep
+# torch.version.cuda and CUDA_HOME set so CUDA-facing code still compiles, but
+# that CUDA_SDK tree is not installed and device code goes through hgcc. torch
+# already resolves all of this -- PPU_HOME is only set for such builds, and
+# CUDA_COMPILER is 'hgcc' there and 'nvcc' otherwise.
+GPU_HOME = PPU_HOME or CUDA_HOME or ROCM_HOME
 
 # TODO: Fix this error in Windows:
 # numba.cuda.cudadrv.driver:driver.py:384 Call to cuInit results in CUDA_ERROR_NO_DEVICE
@@ -47,11 +56,21 @@ if not IS_WINDOWS:
             cls.pytorch_includes = [
                 f"-I{path}" for path in torch_include_paths(device_type="cpu")
             ]
-            cls.cuda_includes = []
-            if GPU_HOME:
-                cuda_include_path = os.path.join(GPU_HOME, "include")
-                if os.path.exists(cuda_include_path):
-                    cls.cuda_includes = [f"-I{cuda_include_path}"]
+            # Device include paths come from torch itself rather than
+            # GPU_HOME/include: on SAIL builds CUDA_HOME points at an
+            # absent CUDA_SDK tree, while include_paths("cuda") resolves to the
+            # PPU SDK plus the sailify compat headers actually used to build
+            # this torch.
+            try:
+                cls.cuda_includes = [
+                    f"-I{path}" for path in torch_include_paths(device_type="cuda")
+                ]
+            except Exception:
+                cls.cuda_includes = []
+                if GPU_HOME:
+                    cuda_include_path = os.path.join(GPU_HOME, "include")
+                    if os.path.exists(cuda_include_path):
+                        cls.cuda_includes = [f"-I{cuda_include_path}"]
 
             cls.cuda_available = cls._check_cuda_available()
 
@@ -64,14 +83,39 @@ if not IS_WINDOWS:
                 shutil.rmtree(cls.build_dir)
 
         @staticmethod
+        def _device_compiler() -> Optional[str]:
+            """Path to the compiler that builds .cu, or None if there is none.
+
+            Existence is verified: without the check subprocess.run() below dies
+            with FileNotFoundError instead of the test skipping cleanly. That is
+            what happens on SAIL builds, where CUDA_HOME points at an
+            uninstalled CUDA_SDK, and on installs carrying only the CUDA runtime.
+            """
+            if not GPU_HOME:
+                return None
+            compiler = os.path.join(
+                GPU_HOME, "bin", "hipcc" if ROCM_HOME else CUDA_COMPILER
+            )
+            return compiler if os.path.exists(compiler) else None
+
+        @staticmethod
         def _check_cuda_available() -> bool:
-            """Check if CUDA is available."""
+            """Check if CUDA is available and a device compiler exists.
+
+            torch.cuda.is_available() alone is not enough: it is also True on
+            SAIL backends and on installs carrying only the CUDA runtime,
+            neither of which can compile .cu.
+            """
             try:
                 import torch
 
-                return torch.cuda.is_available()
+                if not torch.cuda.is_available():
+                    return False
             except ImportError:
                 return False
+            return (
+                FunctionVersionCompatibilityTest._device_compiler() is not None
+            )
 
         def _compile_cpp_file(
             self, source_file: Path, output_file: Path
@@ -111,13 +155,14 @@ if not IS_WINDOWS:
             Compile a CUDA file with TORCH_TARGET_VERSION=2.9.0.
             Returns (success, error_message).
             """
-            if not GPU_HOME:
-                return False, "one of CUDA_HOME and ROCM_HOME should be set but is not"
+            compiler = self._device_compiler()
+            if compiler is None:
+                return False, "no device compiler (nvcc/hipcc/hgcc) found"
 
             torch_version_2_9 = "0x0209000000000000"
 
             cmd = [
-                os.path.join(GPU_HOME, "bin", "nvcc" if CUDA_HOME else "hipcc"),
+                compiler,
                 "-c",
                 "-std=c++17",
                 f"-DTORCH_TARGET_VERSION={torch_version_2_9}",
@@ -128,6 +173,17 @@ if not IS_WINDOWS:
 
             if ROCM_HOME:
                 cmd.extend(["-DUSE_ROCM=1"])
+            else:
+                # The device entry points these files exercise
+                # (torch_get_current_cuda_blas_handle, torch_cuda_stream_*,
+                # torch_c10_cuda_check_msg, ...) sit inside an #ifdef USE_CUDA
+                # block in torch/csrc/stable/c/shim.h. Without the macro they
+                # are simply invisible, so every .cu here fails to compile for
+                # that reason alone -- which silently satisfies the
+                # assertFalse(success) below and turns these tests green while
+                # proving nothing about the TORCH_TARGET_VERSION guards.
+                # Mirrors the USE_ROCM branch above.
+                cmd.extend(["-DUSE_CUDA=1"])
 
             cmd.extend([str(source_file), "-o", str(output_file)])
 

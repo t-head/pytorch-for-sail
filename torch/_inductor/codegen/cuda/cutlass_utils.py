@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 import atexit
 import functools
@@ -484,10 +485,15 @@ class CUDACompileSourceCapturingContext:
 def cuda_standalone_runner_compile_command(srcpath: Path, exepath: Path):
     # returns command string to compile a (captured) CUDA GEMM Kernel source to a standalone executable that's ready to run
     # Passes the correct preprocessor define to nvcc to ensure the standalone runner is enabled.
-    from torch._inductor.codecache import cuda_compile_command
+    from torch._inductor.codecache import _is_ppu, _ppu_compile_command, cuda_compile_command
 
     extra_args = ["-DGENERATE_STANDALONE_RUNNER=1", "-DCUTLASS_DEBUG_TRACE_LEVEL=1"]
-    compile_command = cuda_compile_command(
-        [str(srcpath)], str(exepath), "exe", extra_args=extra_args
-    )
+    if _is_ppu():
+        compile_command = _ppu_compile_command(
+            [str(srcpath)], str(exepath), "exe", extra_args=extra_args
+        )
+    else:
+        compile_command = cuda_compile_command(
+            [str(srcpath)], str(exepath), "exe", extra_args=extra_args
+        )
     return compile_command

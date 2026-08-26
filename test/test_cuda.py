@@ -87,6 +87,7 @@ from torch.testing._internal.common_utils import (
     TEST_WITH_ROCM,
     TestCase,
 )
+from torch.testing._utils import is_ppu
 from torch.utils._triton import has_triton
 from torch.utils.checkpoint import checkpoint_sequential
 from torch.utils.viz._cycles import observe_tensor_cycles
@@ -2648,7 +2649,10 @@ exit(2)
         torch.cuda.empty_cache()
 
         size = 1000
-        kSmallBuffer = 2097152
+        if is_ppu():
+            kSmallBuffer = 8388608
+        else:
+            kSmallBuffer = 2097152
 
         def func_with_temps(t, val):
             x = t.clone() + val
@@ -2877,8 +2881,12 @@ exit(2)
     )
     def test_graph_memory_stats_and_use_result_after_destroy_graph(self):
         kSmallSize = 1048576
-        kSmallBuffer = 2097152
-        kLargeBuffer = 20971520
+        if is_ppu():
+            kSmallBuffer = 8388608
+            kLargeBuffer = 33554432
+        else:
+            kSmallBuffer = 2097152
+            kLargeBuffer = 20971520
         kMinLargeAlloc = 10485760
         kRoundLarge = 2097152
 
@@ -4948,8 +4956,12 @@ print(f"{torch.cuda.device_count()}")
 
 MIN_BLOCK_SIZE = 512
 SMALL_SIZE = 1048576
-SMALL_BUFFER = 2097152
-LARGE_BUFFER = 20971520
+if is_ppu():
+    SMALL_BUFFER = 8388608
+    LARGE_BUFFER = 33554432
+else:
+    SMALL_BUFFER = 2097152
+    LARGE_BUFFER = 20971520
 
 
 def get_cudagraph_segments(pool_id):

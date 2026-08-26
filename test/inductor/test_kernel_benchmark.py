@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: inductor"]
 # ruff: noqa: F841
 import contextlib
@@ -17,6 +18,17 @@ from torch._inductor.utils import fresh_cache
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import xfailIfSM89
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU, IS_BIG_GPU
+
+
+# The helpers below run the generated module in a subprocess and read all of its
+# output, so an unbounded check_output() blocks forever if that process never
+# exits -- test_star_dep has been observed hanging exactly this way on a loaded
+# machine, with no diagnostics at all. Bound the wait so a stuck run raises
+# TimeoutExpired, together with whatever the subprocess had already printed.
+# The limit is deliberately far above the ~12s a healthy run takes, so a busy
+# host is not turned into a spurious failure; lower it via the env var when
+# investigating a hang interactively.
+_SUBPROCESS_TIMEOUT = int(os.environ.get("PYTORCH_KERNEL_BENCHMARK_TIMEOUT", 600))
 
 
 class TestKernelBenchmark(TestCase):
@@ -64,11 +76,17 @@ class TestKernelBenchmark(TestCase):
                 f"{sys.executable} {compiled_module.__file__} -kc".split(),
                 stderr=subprocess.STDOUT,
                 env={**os.environ, "PYTHONPATH": self.python_path},
+                timeout=_SUBPROCESS_TIMEOUT,
             ).decode()
         except subprocess.CalledProcessError as e:
             print("Failed when running output code", e)
             print(e.output.decode())
             raise e
+        except subprocess.TimeoutExpired as e:
+            print(f"Timed out after {_SUBPROCESS_TIMEOUT}s running output code", e)
+            if e.output:
+                print(e.output.decode())
+            raise
 
         # make sure we have the bandwidth information in the output
         FileCheck().check_count(
@@ -87,6 +105,7 @@ class TestKernelBenchmark(TestCase):
                     "PYTHONPATH": self.python_path,
                 },
                 stderr=subprocess.STDOUT,
+                timeout=_SUBPROCESS_TIMEOUT,
             )
         except subprocess.CalledProcessError as e:
             print(
@@ -95,6 +114,15 @@ class TestKernelBenchmark(TestCase):
             )
             print(e.output.decode())
             raise e
+        except subprocess.TimeoutExpired as e:
+            print(
+                f"Timed out after {_SUBPROCESS_TIMEOUT}s running triton code with "
+                "TORCHINDUCTOR_DUMP_LAUNCH_PARAMS=1",
+                e,
+            )
+            if e.output:
+                print(e.output.decode())
+            raise
         from torch.utils._get_clean_triton import get_clean_triton
 
         cleaned_triton = get_clean_triton(
@@ -107,12 +135,19 @@ class TestKernelBenchmark(TestCase):
                 f"{sys.executable} {compiled_module.__file__}.cleaned".split(),
                 stderr=subprocess.STDOUT,
                 env={**os.environ, "PYTHONPATH": self.python_path},
+                timeout=_SUBPROCESS_TIMEOUT,
             )
         except subprocess.CalledProcessError as e:
             print("Failed when when running cleaned triton", e)
             print(e.output.decode())
             print(cleaned_triton)
             raise e
+        except subprocess.TimeoutExpired as e:
+            print(f"Timed out after {_SUBPROCESS_TIMEOUT}s running cleaned triton", e)
+            if e.output:
+                print(e.output.decode())
+            print(cleaned_triton)
+            raise
         return cleaned_triton
 
     def check_bandwidth(self, compiled_module, num_gb):
@@ -122,11 +157,17 @@ class TestKernelBenchmark(TestCase):
                 f"{sys.executable} {compiled_module.__file__} -k".split(),
                 stderr=subprocess.STDOUT,
                 env={**os.environ, "PYTHONPATH": self.python_path},
+                timeout=_SUBPROCESS_TIMEOUT,
             ).decode()
         except subprocess.CalledProcessError as e:
             print("Failed when running output code", e)
             print(e.output.decode())
             raise e
+        except subprocess.TimeoutExpired as e:
+            print(f"Timed out after {_SUBPROCESS_TIMEOUT}s running output code", e)
+            if e.output:
+                print(e.output.decode())
+            raise
 
         # make sure we have the bandwidth information in the output
         FileCheck().check_count(

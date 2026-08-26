@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/driver_api.h>
@@ -78,8 +79,13 @@ void* get_symbol(const char* name, int version) {
 } // namespace
 
 void* DriverAPI::get_nvml_handle() {
+#if defined(USE_SAIL)
+  static void* nvml_hanle = dlopen("libhgml.so", RTLD_LAZY);
+  return nvml_hanle;
+#else
   static void* nvml_hanle = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
   return nvml_hanle;
+#endif
 }
 
 C10_EXPORT DriverAPI* DriverAPI::get() {

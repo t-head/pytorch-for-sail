@@ -1,9 +1,23 @@
 =======================================================================
-Software under third_party
+PyTorch-for-SAIL adaptation
 =======================================================================
-Software libraries under third_party are provided as github submodule
-links, and their content is not part of the Caffe2 codebase. Their
-licences can be found under the respective software repositories.
+This distribution is a derivative work of PyTorch
+(https://github.com/pytorch/pytorch), originally developed by Meta
+Platforms, Inc. and other PyTorch contributors and licensed under the
+BSD 3-Clause License.
+
+Copyright (c) 2022-2026 T-Head (Shanghai) Semiconductor Co., Ltd.
+The PyTorch-for-SAIL adaptations are licensed under the BSD 3-Clause
+License. They add device runtime, compiler toolchain, communication,
+build-system, source-conversion, and optimized attention integration for
+supported PPU accelerators. The upstream PyTorch copyright and license
+notices remain applicable to the corresponding source code.
+
+The flash-attention integration is based on flash-attention by Tri Dao
+and contributors, licensed under the BSD 3-Clause License. The bundled
+integration patch adds PyTorch namespace configuration needed by this
+distribution. The flash-attention source distribution must retain its
+original LICENSE file when redistributed.
 
 =======================================================================
 Earlier BSD License

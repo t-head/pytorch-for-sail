@@ -1,6 +1,8 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: dynamo"]
 import io
 import logging
+import os
 import subprocess
 import sys
 import unittest
@@ -12,6 +14,21 @@ from torch._inductor.codecache import WritableTempFile
 from torch._inductor.test_case import TestCase
 from torch.testing._internal.common_utils import IS_FBCODE, IS_SANDCASTLE
 from torch.utils._triton import has_triton
+
+
+# Each case runs the emitted fx_graph_runnable script in a fresh process, which
+# recompiles the graph from scratch. On PPU SAIL builds that goes
+# through hgcc rather than nvcc and takes noticeably longer, enough for the
+# dynamic-shape cases to blow past the 30s that is ample on CUDA -- they failed
+# with subprocess.TimeoutExpired rather than a real error. Keep the upstream
+# value everywhere else so CUDA runs are unaffected, and allow an override for
+# slower machines.
+_RUNNABLE_TIMEOUT = int(
+    os.environ.get(
+        "PYTORCH_FX_GRAPH_RUNNABLE_TIMEOUT",
+        60 if getattr(torch.version, "sail", None) else 30,
+    )
+)
 
 
 if torch.distributed.is_available():
@@ -136,7 +153,10 @@ class FxGraphRunnableTest(TestCase):
             tmp.write(payload)
             tmp.flush()
             res = subprocess.run(
-                [sys.executable, tmp.name], capture_output=True, text=True, timeout=30
+                [sys.executable, tmp.name],
+                capture_output=True,
+                text=True,
+                timeout=_RUNNABLE_TIMEOUT,
             )
 
             self.assertEqual(

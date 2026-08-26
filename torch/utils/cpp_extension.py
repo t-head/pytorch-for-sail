@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 import copy
 import glob
@@ -140,6 +141,31 @@ def _find_rocm_home() -> str | None:
         logger.warning("No ROCm runtime is found, using ROCM_HOME='%s'", rocm_home)
     return rocm_home
 
+def _find_ppu_home() -> str:
+    """Find the PPU SDK install path.
+
+    Raises RuntimeError if the PPU SDK cannot be located. Callers should set
+    the ``PPU_SDK`` environment variable (e.g. via
+    ``source /usr/local/PPU_SDK/envsetup.sh ppu``) and retry.
+    """
+    # Guess #1
+    ppu_home = os.environ.get('PPU_SDK') or os.environ.get('PPU_HOME')
+    if ppu_home is None:
+        # Guess #2
+        hgcc_path = shutil.which('hgcc')
+        if hgcc_path is not None:
+            ppu_home = os.path.dirname(os.path.dirname(hgcc_path))
+        else:
+            raise RuntimeError(
+                "Cannot locate the PPU SDK: neither the PPU_SDK (nor PPU_HOME) "
+                "environment variable is set, nor is the 'hgcc' compiler found in PATH. "
+                "Please set PPU_SDK to your PPU SDK install root, e.g.\n"
+                "    export PPU_SDK=/usr/local/PPU_SDK\n"
+                "or source the SDK environment script before importing torch:\n"
+                "    source /usr/local/PPU_SDK/envsetup.sh ppu"
+            )
+    return ppu_home
+
 def _find_sycl_home() -> str | None:
     sycl_home = None
     icpx_path = shutil.which('icpx')
@@ -173,6 +199,15 @@ def _join_rocm_home(*paths) -> str:
         raise OSError('ROCM_HOME environment variable is not set. '
                       'Please set it to your ROCm install root.')
     return os.path.join(ROCM_HOME, *paths)
+
+def _join_ppu_home(*paths) -> str:
+    """
+    Join paths with PPU_HOME, or raises an error if PPU_HOME is not set.
+    """
+    if PPU_HOME is None:
+        raise OSError('PPU_SDK environment variable is not set. '
+                      'Please set it to your PPU SDK install root.')
+    return os.path.join(PPU_HOME, *paths)
 
 def _join_sycl_home(*paths) -> str:
     """
@@ -233,6 +268,14 @@ ROCM_VERSION = None
 if torch.version.hip is not None:
     ROCM_VERSION = tuple(int(v) for v in torch.version.hip.split('.')[:2])
 
+# torch.version.sail is non-None only for USE_SAIL (PPU) builds,
+# mirroring how torch.version.hip marks ROCm builds.  Use it as the
+# authoritative build-time marker instead of torch.version.cuda.
+_sail = getattr(torch.version, 'sail', None)
+PPU_HOME = _find_ppu_home() if _sail is not None else None
+IS_PPU_EXTENSION = bool(PPU_HOME is not None and not IS_HIP_EXTENSION)
+CUDA_COMPILER = 'hgcc' if IS_PPU_EXTENSION else 'nvcc'
+
 CUDA_HOME = _find_cuda_home() if (torch.cuda._is_compiled() and torch.version.cuda) else None
 CUDNN_HOME = os.environ.get('CUDNN_HOME') or os.environ.get('CUDNN_PATH')
 SYCL_HOME = _find_sycl_home() if torch.xpu._is_compiled() else None
@@ -260,6 +303,15 @@ COMMON_NVCC_FLAGS = [
     '--expt-relaxed-constexpr'
 ]
 
+# PPU uses hggc_fp16.hpp which checks __HGGC_NO_HALF_* instead of __CUDA_NO_HALF_*
+COMMON_HGCC_FLAGS = [
+    '-D__HGGC_NO_HALF_OPERATORS__',
+    '-D__HGGC_NO_HALF_CONVERSIONS__',
+    '-D__HGGC_NO_BFLOAT16_CONVERSIONS__',
+    '-D__HGGC_NO_HALF2_OPERATORS__',
+    '--expt-relaxed-constexpr'
+]
+
 COMMON_HIP_FLAGS = [
     '-D__HIP_PLATFORM_AMD__=1',
     '-DUSE_ROCM=1',
@@ -281,6 +333,231 @@ if IS_WINDOWS:
     COMMON_HIPCC_FLAGS.append('-fms-extensions')
     # Suppress warnings about dllexport.
     COMMON_HIPCC_FLAGS.append('-Wno-ignored-attributes')
+
+
+# ── nvcc → hgcc flag mapping (imported from sailify) ──
+# The canonical mapping table lives in sailify.nvcc_hgcc_options and is
+# re-exported here for use within PyTorch.  Each option maps to a dict with keys:
+#   short        : short-form flag (also registered as a lookup key)
+#   map_to       : replacement flag(s) — string or list of strings
+#   needs_ignore : if True, drop the flag (and its value when needs_value)
+#   needs_value  : if True, the next argument is the option's value
+#   value_map    : dict mapping raw value → replacement value (or {needs_ignore: True})
+_NVCC_HGCC_OPTIONS: dict[str, dict] = {}
+_NVCC_HGCC_FLAG_MAP: dict[str, dict] = {}
+
+if IS_PPU_EXTENSION:
+    try:
+        from torch.sailify.nvcc_hgcc_options import NVCC_HGCC_OPTIONS as _NVCC_HGCC_OPTIONS
+    except ImportError:
+        pass
+
+    # Build flat lookup: long_name → entry, short_name → entry
+    for _long, _entry in _NVCC_HGCC_OPTIONS.items():
+        _NVCC_HGCC_FLAG_MAP[_long] = _entry
+        _short = _entry.get('short')
+        if _short:
+            _NVCC_HGCC_FLAG_MAP[_short] = _entry
+
+
+def _convert_gencode_to_ppu(gencode_value: str) -> list[str]:
+    """Convert nvcc -gencode=arch=compute_XX,code=sm_XX to hgcc --gpu-architecture.
+
+    nvcc allows multiple -gencode flags to target several architectures, but
+    hgcc uses a single --gpu-architecture flag.  When multiple -gencode flags
+    are present, only the first (highest-priority) one is converted; subsequent
+    ones are silently dropped.
+    """
+    # Parse "arch=compute_80,code=sm_80" → major=8, minor=0
+    # Minor is always last digit; major is all preceding digits (e.g. compute_100 → major=10, minor=0)
+    arch_match = re.search(r'compute_(\d+)(\d)', gencode_value)
+    if not arch_match:
+        # Unrecognised format, return empty to signal skip
+        return []
+    major, minor = int(arch_match.group(1)), int(arch_match.group(2))
+    cuda_version = f'{major}.{minor}'
+    ppu_arch = _cuda_arch_to_ppu(cuda_version)
+    return [f'--gpu-architecture={ppu_arch}']
+
+
+def _extract_include_paths(flags: list[str], existing: list | None = None) -> list[str]:
+    """Extract ``-I`` include paths from a list of compiler flags.
+
+    Handles both ``-Ipath`` and ``-I path`` (two-element) forms.
+    Returns a new list that starts with *existing* (if provided) followed
+    by absolute paths extracted from *flags*, deduplicated.
+    """
+    result = list(existing or [])
+    i = 0
+    while i < len(flags):
+        flag = flags[i]
+        if flag == '-I' and i + 1 < len(flags):
+            inc_path = flags[i + 1]
+            i += 2
+        elif flag.startswith('-I'):
+            inc_path = flag[2:]
+            i += 1
+        else:
+            i += 1
+            continue
+        if inc_path:
+            inc_abs = os.path.abspath(inc_path)
+            if inc_abs not in result:
+                result.append(inc_abs)
+    return result
+
+
+def _sailify_nvcc_flags(flags: list[str]) -> list[str]:
+    """Convert nvcc compile flags to hgcc equivalents.
+
+    Uses the hardcoded ``_NVCC_HGCC_FLAG_MAP`` table:
+
+    * ``needs_ignore``   → flag is dropped
+    * ``map_to``         → flag is replaced (string or list)
+    * ``needs_value``    → the next argument is the value (also mapped via ``value_map``)
+    * unrecognised flags → passed through unchanged
+
+    Special handling for architecture flags:
+    * ``-gencode=arch=compute_XX,code=sm_XX`` → ``--gpu-architecture=ppu_XX``
+      hgcc supports multiple arches via comma-separated values:
+      ``--gpu-architecture=ppu_10,ppu_15``
+    * ``--gpu-architecture=sm_XX`` / ``-arch=sm_XX`` → ``--gpu-architecture=ppu_XX``
+    """
+    if not IS_PPU_EXTENSION:
+        return flags
+    lookup = _NVCC_HGCC_FLAG_MAP
+    result: list[str] = []
+    # Collect all gencode values and --gpu-architecture/-arch values;
+    # hgcc supports multiple arches via comma-separated --gpu-architecture.
+    _ppu_arches: list[str] = []
+    i = 0
+    while i < len(flags):
+        flag = flags[i]
+
+        # Special handling for -gencode (not in the flat lookup table
+        # because the value requires parsing and arch conversion).
+        if flag.startswith('-gencode') or flag.startswith('--gpu-code'):
+            opt, eq, val = flag.partition('=')
+            if eq:
+                # Value attached with '='
+                gencode_value = val
+            elif i + 1 < len(flags):
+                # Value is the next argument
+                gencode_value = flags[i + 1]
+                i += 1
+            else:
+                i += 1
+                continue
+            # Convert and collect — hgcc supports comma-separated arches
+            ppu_flags = _convert_gencode_to_ppu(gencode_value)
+            for pf in ppu_flags:
+                m = re.search(r'--gpu-architecture=(.+)', pf)
+                if m:
+                    _ppu_arches.append(m.group(1))
+            i += 1
+            continue
+
+        # Special handling for --gpu-architecture / -arch (shorthand)
+        if flag.startswith('--gpu-architecture') or flag.startswith('-arch'):
+            opt, eq, val = flag.partition('=')
+            if eq:
+                arch_val = val
+            elif i + 1 < len(flags):
+                arch_val = flags[i + 1]
+                i += 1
+            else:
+                i += 1
+                continue
+            # Convert sm_XX/compute_XX to ppu_XX and collect
+            arch_match = re.match(r'(?:sm_|compute_)(\d+)(\d)', arch_val)
+            if arch_match:
+                major, minor = int(arch_match.group(1)), int(arch_match.group(2))
+                ppu_arch = _cuda_arch_to_ppu(f'{major}.{minor}')
+                _ppu_arches.append(ppu_arch)
+            else:
+                # Already a ppu_ arch or unrecognised — pass through as-is
+                _ppu_arches.append(arch_val)
+            i += 1
+            continue
+
+        # Split "--option=value" or "-opt=value" into option + value
+        opt, eq, val = flag.partition('=')
+        entry = lookup.get(opt)
+
+        if entry is None:
+            # Not in mapping table – pass through unchanged
+            result.append(flag)
+            i += 1
+            continue
+
+        if entry.get('needs_ignore'):
+            # Drop the flag; if it also needs a value that is a separate
+            # argument, drop that too.
+            if entry.get('needs_value') and not eq and i + 1 < len(flags):
+                i += 2
+            else:
+                i += 1
+            continue
+
+        mapped = entry.get('map_to')
+        if mapped is None:
+            # Entry exists but no map_to and no needs_ignore → pass through
+            result.append(flag)
+            i += 1
+            continue
+
+        # Normalise map_to to a list
+        mapped_list = mapped if isinstance(mapped, list) else [mapped]
+
+        needs_value = entry.get('needs_value')
+        value_map = entry.get('value_map')
+
+        # Determine the value (if any)
+        if needs_value:
+            if eq:
+                # Value attached with '='
+                raw_value = val
+            elif i + 1 < len(flags):
+                # Value is the next argument
+                raw_value = flags[i + 1]
+                i += 1  # consume value argument
+            else:
+                raw_value = ''
+
+            # Apply value_map if present
+            if value_map and raw_value in value_map:
+                mapped_value = value_map[raw_value]
+                # value_map entry can itself be a dict with needs_ignore
+                if isinstance(mapped_value, dict) and mapped_value.get('needs_ignore'):
+                    i += 1
+                    continue
+                # Replace the last element of mapped_list with mapped_value
+                # e.g. ['--llvm-options'] + '-v' → ['--llvm-options', '-v']
+                result.extend(mapped_list)
+                result.append(str(mapped_value))
+            else:
+                result.extend(mapped_list)
+                if raw_value:
+                    result.append(raw_value)
+        else:
+            # No value needed – just emit the mapped flags
+            result.extend(mapped_list)
+
+        i += 1
+
+    # After processing all flags, emit --gpu-architecture with all collected
+    # arches as comma-separated values (hgcc supports this format).
+    if _ppu_arches:
+        # Deduplicate while preserving order
+        seen = set()
+        unique_arches = []
+        for a in _ppu_arches:
+            if a not in seen:
+                seen.add(a)
+                unique_arches.append(a)
+        result.append(f'--gpu-architecture={",".join(unique_arches)}')
+
+    return result
 
 
 def _get_icpx_version() -> str:
@@ -501,9 +778,9 @@ def _check_cuda_version(compiler_name: str, compiler_version: TorchVersion) -> N
     if not CUDA_HOME:
         raise RuntimeError(CUDA_NOT_FOUND_MESSAGE)
 
-    nvcc = os.path.join(CUDA_HOME, 'bin', 'nvcc.exe' if IS_WINDOWS else 'nvcc')
+    nvcc = os.path.join(CUDA_HOME, 'bin', CUDA_COMPILER + ('.exe' if IS_WINDOWS else ''))
     if not os.path.exists(nvcc):
-        raise FileNotFoundError(f"nvcc not found at '{nvcc}'. Ensure CUDA path '{CUDA_HOME}' is correct.")
+        raise FileNotFoundError(f"{CUDA_COMPILER} not found at '{nvcc}'. Ensure CUDA path '{CUDA_HOME}' is correct.")
 
     cuda_version_str = subprocess.check_output([nvcc, '--version']).strip().decode(*SUBPROCESS_DECODE_ARGS)
     cuda_version = re.search(r'release (\d+[.]\d+)', cuda_version_str)
@@ -691,7 +968,7 @@ class BuildExtension(build_ext):
             if not self.use_ninja:
                 raise AssertionError("ninja is required to build sycl extensions.")
 
-        if cuda_ext and not IS_HIP_EXTENSION:
+        if cuda_ext and not IS_HIP_EXTENSION and not IS_PPU_EXTENSION:
             _check_cuda_version(compiler_name, compiler_version)
 
         for extension in self.extensions:
@@ -711,6 +988,9 @@ class BuildExtension(build_ext):
 
             if IS_HIP_EXTENSION:
                 self._hipify_compile_flags(extension)
+
+            if IS_PPU_EXTENSION:
+                self._sailify_compile_flags(extension)
 
             if extension.py_limited_api:
                 # compile any extension that has passed in py_limited_api to the
@@ -751,9 +1031,15 @@ class BuildExtension(build_ext):
                 cflags.append(cpp_flag)
 
         def unix_cuda_flags(cflags):
-            cflags = (COMMON_NVCC_FLAGS +
-                      ['--compiler-options', "'-fPIC'"] +
-                      cflags + _get_cuda_arch_flags(cflags))
+            if IS_PPU_EXTENSION:
+                # PPU: hgcc uses -Xcompiler (not --compiler-options) for host flag forwarding
+                cflags = (COMMON_HGCC_FLAGS +
+                          ['-Xcompiler=-fPIC'] +
+                          cflags + _get_cuda_arch_flags(cflags))
+            else:
+                cflags = (COMMON_NVCC_FLAGS +
+                          ['--compiler-options', "'-fPIC'"] +
+                          cflags + _get_cuda_arch_flags(cflags))
 
             # NVCC does not allow multiple -ccbin/--compiler-bindir to be passed, so we avoid
             # overriding the option if the user explicitly passed it.
@@ -779,7 +1065,12 @@ class BuildExtension(build_ext):
             try:
                 original_compiler = self.compiler.compiler_so
                 if _is_cuda_file(src):
-                    nvcc = [_join_rocm_home('bin', 'hipcc') if IS_HIP_EXTENSION else _join_cuda_home('bin', 'nvcc')]
+                    if IS_HIP_EXTENSION:
+                        nvcc = [_join_rocm_home('bin', 'hipcc')]
+                    elif IS_PPU_EXTENSION:
+                        nvcc = [_join_ppu_home('bin', 'hgcc')]
+                    else:
+                        nvcc = [_join_cuda_home('bin', 'nvcc')]
                     self.compiler.set_executable('compiler_so', nvcc)
                     if isinstance(cflags, dict):
                         cflags = cflags['nvcc']
@@ -917,7 +1208,8 @@ class BuildExtension(build_ext):
             return objects
 
         def win_cuda_flags(cflags):
-            return (COMMON_NVCC_FLAGS +
+            _common = COMMON_HGCC_FLAGS if IS_PPU_EXTENSION else COMMON_NVCC_FLAGS
+            return (_common +
                     cflags + _get_cuda_arch_flags(cflags))
 
         def win_hip_flags(cflags):
@@ -961,6 +1253,8 @@ class BuildExtension(build_ext):
                     if _is_cuda_file(src):
                         if IS_HIP_EXTENSION:
                             nvcc = _get_hipcc_path()
+                        elif IS_PPU_EXTENSION:
+                            nvcc = _join_ppu_home('bin', 'hgcc')
                         else:
                             nvcc = _join_cuda_home('bin', 'nvcc')
                         if isinstance(self.cflags, dict):
@@ -1204,6 +1498,19 @@ class BuildExtension(build_ext):
                     modified_flags.append(flag)
             extension.extra_compile_args['nvcc'] = modified_flags
 
+    def _sailify_compile_flags(self, extension) -> None:
+        """Convert nvcc compile flags to hgcc equivalents.
+
+        Applies the hardcoded ``_NVCC_HGCC_FLAG_MAP`` to user-provided
+        ``extra_compile_args['nvcc']`` flags.  Options listed with
+        ``needs_ignore`` are dropped; options with ``map_to`` are replaced;
+        everything else is passed through unchanged.
+        """
+        if isinstance(extension.extra_compile_args, dict) and 'nvcc' in extension.extra_compile_args:
+            extension.extra_compile_args['nvcc'] = _sailify_nvcc_flags(
+                extension.extra_compile_args['nvcc']
+            )
+
     def _define_torch_extension_name(self, extension) -> None:
         # pybind11 doesn't support dots in the names
         # so in order to support extensions in the packages
@@ -1419,6 +1726,10 @@ def CUDAExtension(name, sources, *args, **kwargs):
         libraries.append('amdhip64')
         libraries.append('c10_hip')
         libraries.append('torch_hip')
+    elif IS_PPU_EXTENSION:
+        libraries.append('hggcrt1')
+        libraries.append('c10_cuda')
+        libraries.append('torch_cuda')
     else:
         libraries.append('cudart')
         libraries.append('c10_cuda')
@@ -1451,6 +1762,58 @@ def CUDAExtension(name, sources, *args, **kwargs):
             hipified_sources.add(os.path.relpath(hipified_s_abs, build_dir))
 
         sources = list(hipified_sources)
+
+    if IS_PPU_EXTENSION:
+        from torch.sailify.sailify_python import sailify_extra_files_recursive
+        build_dir = os.getcwd()
+
+        # Collect header search paths from both include_dirs and -I flags
+        # embedded in extra_compile_args.  Users (e.g. torchao) often pass
+        # cutlass include dirs via extra_compile_args['nvcc'] = ['-I...']
+        # rather than include_dirs, so sailify's recursive BFS must be aware
+        # of these paths to discover and convert CUDA headers therein.
+        _eca = kwargs.get('extra_compile_args', {})
+        if isinstance(_eca, dict):
+            _eca_iter = (_eca.get('cxx', []) + _eca.get('nvcc', []))
+        elif isinstance(_eca, list):
+            _eca_iter = _eca
+        else:
+            _eca_iter = []
+        sailify_header_dirs = _extract_include_paths(_eca_iter, include_dirs)
+
+        sailify_result = sailify_extra_files_recursive(
+            output_directory=build_dir,
+            extra_files=[os.path.abspath(s) for s in sources],
+            header_include_dirs=sailify_header_dirs,
+            show_detailed=True,
+        )
+
+        # Add pre-built .ppu_compat/ to include path for COMPATIBLE_VERSION,
+        # COMPATIBLE_ARCH, etc. (shipped in the torch wheel)
+        include_dirs.append(os.path.join(_TORCH_PATH, '.ppu_compat'))
+
+        # Force-include compatible_wrapper.h so that user code (which sailify
+        # only text-replaces, e.g. CUDA_VERSION -> COMPATIBLE_VERSION) can find
+        # the COMPATIBLE_* definitions without manually adding #include.
+        extra_compile_args = kwargs.get('extra_compile_args', {})
+        if isinstance(extra_compile_args, dict):
+            for key in ('cxx', 'nvcc'):
+                args_list = extra_compile_args.get(key, [])
+                args_list.extend(['-include', 'compatible_wrapper.h'])
+                extra_compile_args[key] = args_list
+        else:
+            extra_compile_args = list(extra_compile_args or [])
+            extra_compile_args.extend(['-include', 'compatible_wrapper.h'])
+        kwargs['extra_compile_args'] = extra_compile_args
+
+        ppuified_sources = set()
+        for source in sources:
+            s_abs = os.path.abspath(source)
+            ppuified_s_abs = (sailify_result[s_abs].ppuified_path if (s_abs in sailify_result and
+                              sailify_result[s_abs].ppuified_path is not None) else s_abs)
+            ppuified_sources.add(os.path.relpath(ppuified_s_abs, build_dir))
+
+        sources = list(ppuified_sources)
 
     include_dirs += include_paths(device_type="cuda")
     kwargs['include_dirs'] = include_dirs
@@ -1578,6 +1941,12 @@ def include_paths(device_type: str = "cpu", torch_include_dirs=True) -> list[str
     if device_type == "cuda" and IS_HIP_EXTENSION:
         paths.append(os.path.join(lib_include, 'THH'))
         paths.append(_join_rocm_home('include'))
+    elif device_type == "cuda" and IS_PPU_EXTENSION:
+        paths.append(_join_ppu_home('include'))
+        # Add pre-packaged .ppu_compat for fallback
+        compat_dir = os.path.join(_TORCH_PATH, '.ppu_compat')
+        if os.path.isdir(compat_dir):
+            paths.append(compat_dir)
     elif device_type == "cuda":
         cuda_home_include = _join_cuda_home('include')
         # if we have the Debian/Ubuntu packages for cuda, we get /usr as cuda home.
@@ -1620,6 +1989,8 @@ def library_paths(device_type: str = "cpu", torch_include_dirs: bool = True, cro
         paths.append(_join_rocm_home(lib_dir))
         if HIP_HOME is not None:
             paths.append(os.path.join(HIP_HOME, 'lib'))
+    elif device_type == "cuda" and IS_PPU_EXTENSION:
+        paths.append(_join_ppu_home('lib'))
     elif device_type == "cuda":
         if cross_target_platform == "windows":
             lib_dir = os.path.join('lib', 'x64')
@@ -2204,6 +2575,45 @@ def _jit_compile(name,
 
                         sources = list(hipified_sources)
 
+                    if IS_PPU_EXTENSION and (with_cuda or with_cudnn):
+                        from torch.sailify.sailify_python import sailify_extra_files_recursive
+                        _jit_include_paths = (extra_include_paths if extra_include_paths is not None else [])
+                        # Also collect -I paths from extra_cflags and extra_cuda_cflags
+                        # so that sailify's recursive BFS can discover headers therein.
+                        _jit_flags = (extra_cflags or []) + (extra_cuda_cflags or [])
+                        _jit_include_paths = _extract_include_paths(_jit_flags, _jit_include_paths)
+                        sailify_result = sailify_extra_files_recursive(
+                            output_directory=build_directory,
+                            extra_files=[os.path.abspath(s) for s in sources],
+                            header_include_dirs=_jit_include_paths,
+                            show_detailed=verbose,
+                        )
+
+                        # Add pre-built .ppu_compat/ to include path (shipped in torch wheel)
+                        if extra_include_paths is None:
+                            extra_include_paths = []
+                        extra_include_paths.append(os.path.join(_TORCH_PATH, '.ppu_compat'))
+
+                        # Force-include compatible_wrapper.h so that user code
+                        # (which sailify only text-replaces, e.g. CUDA_VERSION ->
+                        # COMPATIBLE_VERSION) can find the COMPATIBLE_* definitions
+                        # without manually adding #include.
+                        if extra_cflags is None:
+                            extra_cflags = []
+                        extra_cflags.extend(['-include', 'compatible_wrapper.h'])
+                        if extra_cuda_cflags is None:
+                            extra_cuda_cflags = []
+                        extra_cuda_cflags.extend(['-include', 'compatible_wrapper.h'])
+                        # Convert nvcc-specific flags to hgcc equivalents
+                        extra_cuda_cflags = _sailify_nvcc_flags(extra_cuda_cflags)
+
+                        ppuified_sources = set()
+                        for source in sources:
+                            s_abs = os.path.abspath(source)
+                            ppuified_sources.add(sailify_result[s_abs].ppuified_path if s_abs in sailify_result else s_abs)
+
+                        sources = list(ppuified_sources)
+
                     _write_ninja_file_and_build_library(
                         name=name,
                         sources=sources,
@@ -2408,12 +2818,18 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
         extra_ldflags.append(f'-L{TORCH_LIB_PATH}')
         extra_ldflags.append('-lc10')
         if with_cuda:
-            extra_ldflags.append('-lc10_hip' if IS_HIP_EXTENSION else '-lc10_cuda')
+            if IS_HIP_EXTENSION:
+                extra_ldflags.append('-lc10_hip')
+            else:
+                extra_ldflags.append('-lc10_cuda')
         if with_sycl:
             extra_ldflags.append('-lc10_xpu')
         extra_ldflags.append('-ltorch_cpu')
         if with_cuda:
-            extra_ldflags.append('-ltorch_hip' if IS_HIP_EXTENSION else '-ltorch_cuda')
+            if IS_HIP_EXTENSION:
+                extra_ldflags.append('-ltorch_hip')
+            else:
+                extra_ldflags.append('-ltorch_cuda')
         if with_sycl:
             extra_ldflags.append('-ltorch_xpu')
         extra_ldflags.append('-ltorch')
@@ -2431,6 +2847,10 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
             extra_ldflags.append('cudart.lib')
             if CUDNN_HOME is not None:
                 extra_ldflags.append(f'/LIBPATH:{os.path.join(CUDNN_HOME, "lib", "x64")}')
+        elif IS_PPU_EXTENSION:
+            # PPU SDK uses libhggcrt1.so instead of libcudart.so
+            extra_ldflags.append(f'-L{_join_ppu_home("lib")}')
+            extra_ldflags.append('-lhggcrt1')
         elif not IS_HIP_EXTENSION:
             extra_lib_dir = "lib64"
             if (not os.path.exists(_join_cuda_home(extra_lib_dir)) and
@@ -2459,6 +2879,29 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
     return extra_ldflags
 
 
+def _cuda_arch_to_ppu(arch: str) -> str:
+    """Map CUDA compute capability to PPU arch name.
+
+    PPU uses format 'ppu_XX' where XX = __HGGC_ARCH__ / 10.
+    e.g., sm_80 → ppu_10, sm_89 → ppu_15
+
+    Accepts formats like "8.0", "9.0", "9.0a", "8.0+PTX".
+    The 'a' suffix (e.g. sm_90a) is stripped — PPU has no
+    architecture-specific variants.
+    """
+    if arch.startswith('ppu_'):
+        return arch
+    version_str = arch.split('+')[0]  # Remove "+PTX" if present
+    version_str = version_str.rstrip('a')
+    major, minor = version_str.split('.')
+    major, minor = int(major), int(minor)
+    if major == 8 and minor in (0, 6):
+        return 'ppu_10'
+    elif major == 8 and minor == 9:
+        return 'ppu_15'
+    return 'ppu_10'
+
+
 def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     """
     Determine CUDA arch flags to use.
@@ -2471,6 +2914,48 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     See select_compute_arch.cmake for corresponding named and supported arches
     when building with CMake.
     """
+    # PPU: hgcc uses --gpu-architecture=ppu_XX, not -gencode
+    if IS_PPU_EXTENSION:
+        if os.environ.get('TORCH_CUDA_ARCH_LIST'):
+            raise RuntimeError(
+                'SAIL extensions do not support TORCH_CUDA_ARCH_LIST. '
+                'Unset it and set PYTORCH_SAIL_ARCH to ppu_10, ppu_15, '
+                'or a semicolon-separated list of both.'
+            )
+
+        _arch_list = os.environ.get('PYTORCH_SAIL_ARCH')
+        if not _arch_list:
+            raise RuntimeError(
+                'SAIL extensions require PYTORCH_SAIL_ARCH. Set it to ppu_10, '
+                'ppu_15, or a semicolon-separated list of both.'
+            )
+        _arch_list = _arch_list.replace(' ', ';')
+        ppu_arches = []
+        for arch in _arch_list.split(';'):
+            if not arch:
+                continue
+            if arch not in ('ppu_10', 'ppu_15'):
+                raise ValueError(
+                    f"Unsupported PYTORCH_SAIL_ARCH value '{arch}'. "
+                    'Supported values are ppu_10 and ppu_15.'
+                )
+            ppu_arches.append(arch)
+        if not ppu_arches:
+            raise ValueError(
+                'PYTORCH_SAIL_ARCH must include ppu_10, ppu_15, or both.'
+            )
+
+        # Do not inject a duplicate architecture option when callers provide one.
+        if cflags is not None:
+            for flag in cflags:
+                if 'TORCH_EXTENSION_NAME' in flag:
+                    continue
+                if 'arch' in flag or '--gpu-architecture' in flag:
+                    return []
+
+        # hgcc supports comma-separated arches in a single --gpu-architecture
+        return [f'--gpu-architecture={",".join(ppu_arches)}']
+
     # If cflags is given, there may already be user-provided arch flags in it
     # (from `extra_compile_args`)
     if cflags is not None:
@@ -2500,9 +2985,10 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     ])
 
     supported_arches = ['3.5', '3.7', '5.0', '5.2', '5.3', '6.0', '6.1', '6.2',
-                        '7.0', '7.2', '7.5', '8.0', '8.6', '8.7', '8.9', '9.0', '9.0a',
-                        '10.0', '10.0a', '11.0', '11.0a', '10.3', '10.3a', '12.0',
+                        '7.0', '7.2', '7.5', '8.0', '8.0a', '8.6', '8.7', '8.9', '9.0', '9.0a',
+                        '10.0', '10.0a', '10.1', '10.1a', '10.3', '10.3a', '12.0',
                         '12.0a', '12.1', '12.1a']
+
     valid_arch_strings = supported_arches + [s + "+PTX" for s in supported_arches]
 
     # The default is sm_30 for CUDA 9.x and 10.x
@@ -2551,16 +3037,27 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
 
     flags = []
     for arch in arch_list:
+        if not arch:
+            continue
         if arch not in valid_arch_strings:
             raise ValueError(f"Unknown CUDA arch ({arch}) or GPU not supported")
         else:
             # Handle both single and double-digit architecture versions
-            version = arch.split('+')[0]  # Remove "+PTX" if present
-            major, minor = version.split('.')
+            version_str = arch.split('+')[0]  # Remove "+PTX" if present
+            major, minor = version_str.split('.')
+
             num = f"{major}{minor}"
+
+            ptx_major = major
+            ptx_minor_match = re.match(r"(\d+)", minor)
+            if ptx_minor_match is None:
+                raise ValueError(f"Could not parse minor version for PTX from arch '{arch}'")
+            ptx_minor = ptx_minor_match.group(1)
+            ptx_num = f"{ptx_major}{ptx_minor}"
+
             flags.append(f'-gencode=arch=compute_{num},code=sm_{num}')
             if arch.endswith('+PTX'):
-                flags.append(f'-gencode=arch=compute_{num},code=compute_{num}')
+                flags.append(f'-gencode=arch=compute_{ptx_num},code=compute_{ptx_num}')
 
     return sorted(set(flags))
 
@@ -2802,7 +3299,7 @@ def _write_ninja_file_to_build_library(path,
         if IS_WINDOWS:
             cuda_flags = _nt_quote_args(cuda_flags)
     elif with_cuda:
-        cuda_flags = common_cflags + COMMON_NVCC_FLAGS + _get_cuda_arch_flags(extra_cuda_cflags)
+        cuda_flags = common_cflags + (COMMON_HGCC_FLAGS if IS_PPU_EXTENSION else COMMON_NVCC_FLAGS) + _get_cuda_arch_flags(extra_cuda_cflags)
         if IS_WINDOWS:
             for flag in COMMON_MSVC_FLAGS:
                 cuda_flags = ['-Xcompiler', flag] + cuda_flags
@@ -2812,7 +3309,7 @@ def _write_ninja_file_to_build_library(path,
             cuda_flags = _nt_quote_args(cuda_flags)
             cuda_flags += _nt_quote_args(extra_cuda_cflags)
         else:
-            cuda_flags += ['--compiler-options', "'-fPIC'"]
+            cuda_flags += ['-Xcompiler=-fPIC'] if IS_PPU_EXTENSION else ['--compiler-options', "'-fPIC'"]
             cuda_flags += extra_cuda_cflags
             if not any(flag.startswith('-std=') for flag in cuda_flags):
                 cuda_flags.append('-std=c++17')
@@ -2950,6 +3447,8 @@ e.
         else:
             if IS_HIP_EXTENSION:
                 nvcc = _get_hipcc_path()
+            elif IS_PPU_EXTENSION:
+                nvcc = _join_ppu_home('bin', 'hgcc')
             else:
                 nvcc = _join_cuda_home('bin', 'nvcc')
         config.append(f'nvcc = {nvcc}')

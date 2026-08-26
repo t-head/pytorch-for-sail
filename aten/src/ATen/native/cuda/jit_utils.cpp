@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #define TORCH_ASSERT_NO_OPERATORS
 #include <c10/core/ScalarType.h>
 #include <c10/util/irange.h>
@@ -1582,6 +1583,16 @@ NvrtcFunction jit_pwise_function(
 
 #ifdef USE_ROCM
   std::vector<const char*> args = {"--std=c++17"};
+#elif defined(USE_SAIL)
+  // PPU: hgrtc expects --gpu-architecture=ppu_XX, not sm_/compute_
+  // Map CUDA compute capability to PPU arch:
+  // major=8, minor=0/6 → ppu_10; major=8, minor=9 → ppu_15
+  const std::string ppu_arch_str =
+      (cuda_major == 8 && cuda_minor == 9) ? "ppu_15" : "ppu_10";
+  const std::string compute =
+      std::string("--gpu-architecture=") + ppu_arch_str;
+  std::vector<const char*> args = {
+      "--std=c++17", compute.c_str(), "-default-device"};
 #else
   // Constructs nvrtc build arguments
   // CUDA 11.1 allows going directly to SASS (sm_) instead of PTX (compute_)

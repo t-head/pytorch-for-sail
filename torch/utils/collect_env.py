@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # mypy: allow-untyped-defs
 
 # Unlike the rest of the PyTorch this file must be python2 compliant.
@@ -267,8 +268,41 @@ def get_cudnn_version(run_lambda):
     return "Probably one of the following:\n{}".format(result)
 
 
+def _is_sail_mode():
+    """Return True when running in SAIL (PPU) mode.
+
+    Determined SOLELY by the build-time marker ``torch.version.sail`` (non-None
+    only for USE_SAIL builds), mirroring how ROCm is detected via
+    ``torch.version.hip is not None``.  Guarded by ``TORCH_AVAILABLE`` so this
+    diagnostics script stays runnable even when ``import torch`` fails -- in
+    that case the marker is unreadable and we fall through to the default
+    ``nvidia-smi`` path.
+
+    NOTE: keep the detection semantics here in sync with
+    ``torch._smi.is_sail_mode``.
+    """
+    return (
+        TORCH_AVAILABLE
+        and hasattr(torch.version, "sail")
+        and torch.version.sail is not None
+    )
+
+
 def get_nvidia_smi():
-    # Note: nvidia-smi is currently available only on Windows and Linux
+    """Return the path/command for the GPU management tool.
+
+    Supports two modes (see :func:`_is_sail_mode` for how the mode is
+    determined):
+    - CUDA-compatible mode (default): uses ``nvidia-smi``
+    - SAIL mode (PPU platform): uses ``ppu-smi``
+
+    Note: nvidia-smi is currently available only on Windows and Linux.
+    """
+    # ── SAIL / PPU mode ────────────────────────────────────────────────
+    if _is_sail_mode():
+        return "ppu-smi"
+
+    # ── CUDA-compatible mode (default) ──────────────────────────────────────
     smi = "nvidia-smi"
     if get_platform() == "win32":
         system_root = os.environ.get("SYSTEMROOT", "C:\\Windows")

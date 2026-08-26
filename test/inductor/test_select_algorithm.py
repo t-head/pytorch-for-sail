@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: inductor"]
 import contextlib
 import functools
@@ -40,6 +41,7 @@ from torch.testing._internal.inductor_utils import (
     requires_gpu,
     requires_triton,
 )
+from torch.testing._utils import is_ppu
 
 
 aten = torch.ops.aten
@@ -125,6 +127,13 @@ class TestSelectAlgorithm(TestCase):
             return choices[:1] if choices else []
 
         select_algorithm.add_preprocessing_fn(return_first_choice_only)
+        # The registry lives on the global algorithm selector and survives
+        # fresh_cache(), whose cache_clear() only drops the precompile and
+        # prescreening caches. Left behind, every later autotune sees a single
+        # choice and silently stops autotuning -- which only surfaces in classes
+        # that do not call clear_preprocessing_fns() in setUp, e.g.
+        # TestExternKernelCaller, which pytest runs after this class.
+        self.addCleanup(select_algorithm.clear_preprocessing_fns)
 
         @torch.compile
         def foo(input, weight, bias):
@@ -252,6 +261,12 @@ class TestSelectAlgorithm(TestCase):
 
     # TODO: fix accuracy failure of the triton template on XPU.
     # and enable this test case.
+    # On PPU the verification reference is the weaker side: the extern aten
+    # mm_plus_mm is ~7e-4 away from a float64 reference for these 512x512 fp32
+    # inputs (the triton templates stay within ~2e-4), so VERIFY's 1e-4 cannot
+    # hold whichever choice is measured. Gated rather than loosened so the
+    # tolerance keeps its meaning on backends that can meet it.
+    @unittest.skipIf(is_ppu(), "PPU: aten mm_plus_mm baseline exceeds VERIFY's 1e-4")
     @patches
     def test_mm_plus_mm2(self):
         @torch.compile

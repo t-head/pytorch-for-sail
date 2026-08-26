@@ -21,7 +21,8 @@
 [submodule "third_party/gloo"]
     ignore = dirty
     path = third_party/gloo
-    url = https://github.com/pytorch/gloo
+    url = https://github.com/t-head/gloo.git
+    branch = main
 [submodule "third_party/NNPACK_deps/pthreadpool"]
     ignore = dirty
     path = third_party/pthreadpool
@@ -104,8 +105,9 @@
 	path = third_party/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
 [submodule "third_party/cutlass"]
-	path = third_party/cutlass
-	url = https://github.com/NVIDIA/cutlass.git
+    path = third_party/cutlass
+    url = https://github.com/t-head/actlize.git
+    branch = v0.8.0
 [submodule "third_party/mimalloc"]
 	path = third_party/mimalloc
 	url = https://github.com/microsoft/mimalloc.git
@@ -127,8 +129,21 @@
 	path = third_party/kleidiai
 	url = https://github.com/ARM-software/kleidiai.git
 [submodule "third_party/flash-attention"]
-	path = third_party/flash-attention
-	url = https://github.com/Dao-AILab/flash-attention.git
+    path = third_party/flash-attention
+    url = https://github.com/t-head/flash-attention-for-sail.git
+    branch = v2.7.2
 [submodule "third_party/aiter"]
 	path = third_party/aiter
 	url = https://github.com/ROCm/aiter.git
+[submodule "third_party/xformers"]
+    path = third_party/xformers
+    url = https://github.com/t-head/xformers-for-sail.git
+    branch = v0.0.27
+[submodule "third_party/sailify"]
+	path = third_party/sailify
+	url = https://github.com/t-head/sailify.git
+    branch = Main
+[submodule "third_party/cmake-hgcc"]
+	path = third_party/cmake-hgcc
+	url = https://github.com/t-head/cmake-hgcc.git
+	branch = master
