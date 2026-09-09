@@ -140,10 +140,10 @@
     url = https://github.com/t-head/xformers-for-sail.git
     branch = v0.0.27
 [submodule "third_party/sailify"]
-	path = third_party/sailify
-	url = https://github.com/t-head/sailify.git
+    path = third_party/sailify
+    url = https://github.com/t-head/sailify.git
     branch = Main
 [submodule "third_party/cmake-hgcc"]
-	path = third_party/cmake-hgcc
-	url = https://github.com/t-head/cmake-hgcc.git
-	branch = master
+    path = third_party/cmake-hgcc
+    url = https://github.com/t-head/cmake-hgcc.git
+    branch = master

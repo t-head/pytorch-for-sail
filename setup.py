@@ -2316,6 +2316,12 @@ def main() -> None:
         torch_package_data += [
             ".ppu_compat/*.h",
         ]
+        # Compat templates/headers for JIT-time .ppu_compat generation.
+        package_data["torch.sailify"] = [
+            "compatible_wrapper.h.tpl",
+            "*.h",
+            "unsupported_stubs/*.json",
+        ]
 
     if not BUILD_LIBTORCH_WHL:
         package_data["torchgen"] = torchgen_package_data
