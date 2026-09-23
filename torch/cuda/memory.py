@@ -279,7 +279,7 @@ def memory_stats(device: "Device" = None) -> dict[str, Any]:
     - ``"num_sync_all_streams"``: number of ``synchronize_and_free_events`` calls.
     - ``"num_device_alloc"``: number of CUDA allocation calls. This includes both
       cuMemMap and cudaMalloc.
-    - ``"num_device_free"``: number of CUDA free calls. This includes both cuMemUnmap
+    - ``"num_device_free"``: number of CUDA deallocation calls. This includes both cuMemUnmap
       and cudaFree.
     - ``"num_oom_rejections"``: number of allocations preemptively rejected by the
         throw_on_cudamalloc_oom + per_process_memory_fraction policy.
