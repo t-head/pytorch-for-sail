@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Owner(s): ["module: inductor"]
 
 import ctypes
@@ -6,6 +7,7 @@ import unittest
 import torch
 from torch._inductor.async_compile import AsyncCompile
 from torch._inductor.codecache import CUDACodeCache
+from torch._inductor.codegen.cuda import compile_utils as cuda_compile_utils
 from torch._inductor.codegen.cuda.cuda_env import nvcc_exist
 from torch._inductor.exc import CUDACompileError
 from torch._inductor.test_case import TestCase as InductorTestCase
@@ -37,7 +39,12 @@ int saxpy(int n, float a, float *x, float *y) {
 """
 
 
-@unittest.skipUnless(nvcc_exist(), "requires nvcc")
+# CUDA uses nvcc, while SAIL uses hgcc. _cuda_compiler() is the shared
+# compiler resolver and lets this test validate either supported toolchain.
+@unittest.skipUnless(
+    nvcc_exist(cuda_compile_utils._cuda_compiler()),
+    "requires CUDA or PPU compiler",
+)
 class TestCUDACodeCache(InductorTestCase):
     @requires_cuda_and_triton
     def test_cuda_load(self):

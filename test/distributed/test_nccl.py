@@ -2,6 +2,7 @@
 
 import os
 import sys
+import unittest
 
 import torch
 import torch.cuda
@@ -44,7 +45,10 @@ if not TEST_CUDA:
 
 datatypes = [torch.float]
 if (
-    TEST_CUDA and c10d.is_nccl_available() and nccl.version() >= (2, 10)
+    TEST_CUDA
+    and torch.version.sail is None
+    and c10d.is_nccl_available()
+    and nccl.version() >= (2, 10)
 ) or TEST_WITH_ROCM:
     datatypes.append(torch.bfloat16)
 
@@ -225,6 +229,10 @@ class TestNCCL(TestCase):
 
 @instantiate_parametrized_tests
 @requires_cuda_p2p_access()
+@unittest.skipIf(
+    torch.version.sail is not None,
+    "PCCL does not provide NCCL symmetric-memory communicators",
+)
 class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
     @property
     def device(self) -> torch.device:
