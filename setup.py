@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # Welcome to the PyTorch setup.py.
 # Environment variables you are probably interested in:
 #
@@ -58,8 +59,8 @@
 #   USE_FBGEMM=0
 #     disables the FBGEMM build
 #
-#   USE_MSLK=0
-#     disables the MSLK build
+#   USE_FBGEMM_GENAI=0
+#     disables the FBGEMM GenAI build
 #
 #   USE_KINETO=0
 #     disables usage of libkineto library for profiling
@@ -126,6 +127,10 @@
 #   PYTORCH_BUILD_NUMBER
 #     specify the version of PyTorch, rather than the hard-coded version
 #     in this file; used when we're building binaries for distribution
+#
+#   PYTORCH_SAIL_ARCH
+#     specify which native PPU architectures to build for in SAIL mode.
+#     ie `PYTORCH_SAIL_ARCH="ppu_10;ppu_15"`
 #
 #   TORCH_CUDA_ARCH_LIST
 #     specify which CUDA architectures to build for.
@@ -270,13 +275,17 @@ if sys.version_info < python_min_version:
     )
     sys.exit(-1)
 
+import filecmp  # noqa: E402
+import glob  # noqa: E402
 import importlib
 import itertools
+import json  # noqa: E402
 import shutil
 import subprocess
 import sysconfig
 import tempfile
 import textwrap
+import time  # noqa: E402
 import zipfile
 from collections import defaultdict
 from pathlib import Path
@@ -284,6 +293,7 @@ from typing import Any, ClassVar, IO
 
 import setuptools.command.bdist_wheel
 import setuptools.command.build_ext
+import setuptools.command.sdist  # noqa: E402
 import setuptools.errors
 from setuptools import Command, Extension, find_packages, setup
 from setuptools.dist import Distribution
@@ -310,10 +320,15 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
 ).rstrip(os.pathsep)
 
 from tools.build_pytorch_libs import build_pytorch
-from tools.clean import clean as _clean
 from tools.generate_torch_version import get_torch_version
 from tools.setup_helpers.cmake import CMake, CMakeValue
-from tools.setup_helpers.env import IS_DARWIN, IS_LINUX, IS_WINDOWS
+from tools.setup_helpers.env import (  # noqa: E402
+    BUILD_DIR,
+    build_type,
+    IS_DARWIN,
+    IS_LINUX,
+    IS_WINDOWS,
+)
 
 
 def str2bool(value: str | None) -> bool:
@@ -389,45 +404,56 @@ RUN_BUILD_DEPS = True
 # see if the user passed a quiet flag to setup.py arguments and respect
 # that in our parts of the build
 EMIT_BUILD_WARNING = False
-RERUN_CMAKE = str2bool(os.environ.pop("CMAKE_FRESH", None)) or "--cmake" in sys.argv
-CMAKE_ONLY = str2bool(os.environ.pop("CMAKE_ONLY", None)) or "--cmake-only" in sys.argv
+RERUN_CMAKE = str2bool(os.environ.pop("CMAKE_FRESH", None))
+CMAKE_ONLY = str2bool(os.environ.pop("CMAKE_ONLY", None))
 filtered_args = []
 for i, arg in enumerate(sys.argv):
-    if arg in ("--cmake", "--cmake-only"):
+    if arg == "--cmake":
+        RERUN_CMAKE = True
+        continue
+    if arg == "--cmake-only":
+        # Stop once cmake terminates. Leave users a chance to adjust build
+        # options.
+        CMAKE_ONLY = True
         continue
     if arg == "rebuild" or arg == "build":
         arg = "build"  # rebuild is gone, make it build
         EMIT_BUILD_WARNING = True
-    if arg in ("develop", "install"):
-        # CMAKE_ONLY only runs cmake and exits (via sys.exit in build_deps)
-        # before setup() is called, so there's no need to go through pip.
-        # Replace the command with "build" so setuptools doesn't complain
-        # about an unrecognized command if we somehow reach setup().
-        if CMAKE_ONLY:
-            arg = "build"
-        else:
-            editable = arg == "develop"
-            print(
-                (
-                    f"WARNING: Redirecting 'python setup.py {arg}' to "
-                    f"'pip install {'-e ' if editable else ''}. -v --no-build-isolation',"
-                    " for more info see https://github.com/pytorch/pytorch/issues/152276"
-                ),
-                file=sys.stderr,
-            )
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pip",
-                    "install",
-                    *(("-e", ".") if editable else (".",)),
-                    "-v",
-                    "--no-build-isolation",
-                ],
-                env={**os.environ},
-            )
-            sys.exit(result.returncode)
+    if arg == "develop":
+        print(
+            (
+                "WARNING: Redirecting 'python setup.py develop' to 'pip install -e . -v --no-build-isolation',"
+                " for more info see https://github.com/pytorch/pytorch/issues/152276"
+            ),
+            file=sys.stderr,
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-e",
+                ".",
+                "-v",
+                "--no-build-isolation",
+            ],
+            env={**os.environ},
+        )
+        sys.exit(result.returncode)
+    if arg == "install":
+        print(
+            (
+                "WARNING: Redirecting 'python setup.py install' to 'pip install . -v --no-build-isolation',"
+                " for more info see https://github.com/pytorch/pytorch/issues/152276"
+            ),
+            file=sys.stderr,
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", ".", "-v", "--no-build-isolation"],
+            env={**os.environ},
+        )
+        sys.exit(result.returncode)
     if arg == "--":
         filtered_args += sys.argv[i:]
         break
@@ -493,6 +519,163 @@ TORCH_VERSION = get_torch_version()
 report(f"Building wheel {TORCH_PACKAGE_NAME}-{TORCH_VERSION}")
 
 cmake = CMake()
+
+
+def get_submodule_folders() -> list[Path]:
+    git_modules_file = CWD / ".gitmodules"
+    default_modules_path = [
+        THIRD_PARTY_DIR / name
+        for name in ["gloo", "cpuinfo", "onnx", "fbgemm", "cutlass3", "cutlass"]
+    ]
+    if not git_modules_file.exists():
+        return default_modules_path
+    with git_modules_file.open(encoding="utf-8") as f:
+        return [
+            CWD / line.partition("=")[-1].strip()
+            for line in f
+            if line.strip().startswith("path")
+        ]
+
+
+def check_submodules() -> None:
+    def check_for_files(folder: Path, files: list[str]) -> None:
+        if not any((folder / f).exists() for f in files):
+            report("Could not find any of {} in {}".format(", ".join(files), folder))
+            report("Did you run 'git submodule update --init --recursive'?")
+            sys.exit(1)
+
+    def not_exists_or_empty(folder: Path) -> bool:
+        return not folder.exists() or (
+            folder.is_dir() and next(folder.iterdir(), None) is None
+        )
+
+    if str2bool(os.getenv("USE_SYSTEM_LIBS")):
+        return
+    folders = get_submodule_folders()
+    # If none of the submodule folders exists, try to initialize them
+    if all(not_exists_or_empty(folder) for folder in folders):
+        try:
+            report(" --- Trying to initialize submodules")
+            start = time.time()
+            subprocess.check_call(
+                ["git", "submodule", "update", "--init", "--recursive"], cwd=CWD
+            )
+            end = time.time()
+            report(f" --- Submodule initialization took {end - start:.2f} sec")
+        except Exception:
+            report(" --- Submodule initialization failed")
+            report("Please run:\n\tgit submodule update --init --recursive")
+            sys.exit(1)
+    for folder in folders:
+        check_for_files(
+            folder,
+            [
+                "CMakeLists.txt",
+                "Makefile",
+                "setup.py",
+                "LICENSE",
+                "LICENSE.md",
+                "LICENSE.txt",
+            ],
+        )
+    check_for_files(
+        THIRD_PARTY_DIR / "fbgemm" / "external" / "asmjit",
+        ["CMakeLists.txt"],
+    )
+
+
+# Windows has very bad support for symbolic links.
+# Instead of using symlinks, we're going to copy files over
+def mirror_files_into_torchgen() -> None:
+    # (new_path, orig_path)
+    # Directories are OK and are recursively mirrored.
+    paths = [
+        (
+            CWD / "torchgen/packaged/ATen/native/native_functions.yaml",
+            CWD / "aten/src/ATen/native/native_functions.yaml",
+        ),
+        (
+            CWD / "torchgen/packaged/ATen/native/tags.yaml",
+            CWD / "aten/src/ATen/native/tags.yaml",
+        ),
+        (
+            CWD / "torchgen/packaged/ATen/templates",
+            CWD / "aten/src/ATen/templates",
+        ),
+        (
+            CWD / "torchgen/packaged/autograd",
+            CWD / "tools/autograd",
+        ),
+        (
+            CWD / "torchgen/packaged/autograd/templates",
+            CWD / "tools/autograd/templates",
+        ),
+    ]
+    for new_path, orig_path in paths:
+        # Create the dirs involved in new_path if they don't exist
+        if not new_path.exists():
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Copy the files from the orig location to the new location
+        if orig_path.is_file():
+            shutil.copyfile(orig_path, new_path)
+            continue
+        if orig_path.is_dir():
+            if new_path.exists():
+                # copytree fails if the tree exists already, so remove it.
+                shutil.rmtree(new_path)
+            shutil.copytree(orig_path, new_path)
+            continue
+        raise RuntimeError("Check the file paths in `mirror_files_into_torchgen()`")
+
+
+def mirror_inductor_external_kernels() -> None:
+    """
+    Copy external kernels into Inductor so they are importable.
+    """
+    # CMake defaults USE_PPU to ON in this fork, while Python build scripts may
+    # expose PPU mode only through PPU_SDK. Treat either indicator as PPU mode
+    # so the unavailable CUTLASS CuTeDSL grouped-GEMM template is skipped.
+    cuda_is_disabled = (
+        not str2bool(os.getenv("USE_CUDA"))
+        or str2bool(os.getenv("USE_PPU"))
+        or bool(os.getenv("PPU_SDK"))
+    )
+    sail_mode = str2bool(os.getenv("USE_SAIL"))
+    paths = [
+        (
+            CWD / "torch/_inductor/kernel/vendored_templates/cutedsl_grouped_gemm.py",
+            CWD
+            / "third_party/cutlass/examples/python/CuTeDSL/blackwell/grouped_gemm.py",
+            True,
+        ),
+    ]
+    for new_path, orig_path, allow_missing_if_cuda_is_disabled in paths:
+        # Create the dirs involved in new_path if they don't exist
+        if not new_path.exists():
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            # Add `__init__.py` for find_packages to see `new_path.parent` as a submodule
+            (new_path.parent / "__init__.py").touch(exist_ok=True)
+
+        # Copy the files from the orig location to the new location
+        if orig_path.is_file():
+            shutil.copyfile(orig_path, new_path)
+            continue
+        if orig_path.is_dir():
+            if new_path.exists():
+                # copytree fails if the tree exists already, so remove it.
+                shutil.rmtree(new_path)
+            shutil.copytree(orig_path, new_path)
+            continue
+        if (
+            not orig_path.exists()
+            and allow_missing_if_cuda_is_disabled
+            and (cuda_is_disabled or sail_mode)
+        ):
+            continue
+        raise RuntimeError(
+            "Check the file paths in `mirror_inductor_external_kernels()`"
+        )
 
 
 # ATTENTION: THIS IS AI SLOP
@@ -652,7 +835,7 @@ def get_latest_nightly_version(variant: str = "cpu") -> str:
 def download_and_extract_nightly_wheel(version: str) -> None:
     """Download and extract nightly PyTorch wheel for USE_NIGHTLY=VERSION builds."""
 
-    # Extract variant from version (e.g., cpu, cu121, cu118, rocm6.2)
+    # Extract variant from version (e.g., cpu, cu121, cu118, rocm5.7)
     variant = extract_variant_from_version(version)
     nightly_index_url = f"https://download.pytorch.org/whl/nightly/{variant}/"
 
@@ -861,7 +1044,13 @@ def build_deps() -> None:
             download_and_extract_nightly_wheel(nightly_version)
             return
 
+    check_submodules()
     check_pydep("yaml", "pyyaml")
+    # Must precede CMake in SAIL mode: gloo's Sailify.cmake looks for a
+    # `sailify` program at configure time. CUDA-compatible builds do not use
+    # gloo_hg and must not depend on the sailify submodule.
+    if str2bool(os.getenv("USE_SAIL")):
+        _ensure_sailify_command()
     build_pytorch(
         version=TORCH_VERSION,
         cmake_python_library=CMAKE_PYTHON_LIBRARY.as_posix(),
@@ -878,6 +1067,28 @@ def build_deps() -> None:
             '"python -m pip install --no-build-isolation -v ." to build.'
         )
         sys.exit()
+
+    # Use copies instead of symbolic files.
+    # Windows has very poor support for them.
+    sym_files = [
+        CWD / "tools/shared/_utils_internal.py",
+        CWD / "torch/utils/benchmark/utils/valgrind_wrapper/callgrind.h",
+        CWD / "torch/utils/benchmark/utils/valgrind_wrapper/valgrind.h",
+    ]
+    orig_files = [
+        CWD / "torch/_utils_internal.py",
+        CWD / "third_party/valgrind-headers/callgrind.h",
+        CWD / "third_party/valgrind-headers/valgrind.h",
+    ]
+    for sym_file, orig_file in zip(sym_files, orig_files):
+        same = False
+        if sym_file.exists():
+            if filecmp.cmp(sym_file, orig_file):
+                same = True
+            else:
+                sym_file.unlink()
+        if not same:
+            shutil.copyfile(orig_file, sym_file)
 
 
 ################################################################################
@@ -900,6 +1111,162 @@ def check_pydep(importname: str, module: str) -> None:
 
 
 class build_ext(setuptools.command.build_ext.build_ext):
+    def _wrap_headers_with_macro(self, include_dir: Path) -> None:
+        """Wrap all header files with #if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION).
+
+        Excludes:
+        - torch/headeronly/*
+        - torch/csrc/stable/*
+        - torch/csrc/inductor/aoti_torch/c/ (only shim headers)
+        - torch/csrc/inductor/aoti_torch/generated/
+
+        This method is idempotent - it will not wrap headers that are already wrapped.
+        """
+        header_extensions = (".h", ".hpp", ".cuh")
+        header_files = [
+            f for ext in header_extensions for f in include_dir.rglob(f"*{ext}")
+        ]
+
+        # Paths to exclude from wrapping (relative to include_dir)
+        exclude_dir_patterns = [
+            "torch/headeronly/",
+            "torch/csrc/stable/",
+            "torch/csrc/inductor/aoti_torch/c/",
+            "torch/csrc/inductor/aoti_torch/generated/",
+        ]
+
+        # Marker to detect if a header is already wrapped
+        wrap_start_marker = (
+            "#if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)\n"
+        )
+
+        for header_file in header_files:
+            rel_path = header_file.relative_to(include_dir).as_posix()
+
+            if any(rel_path.startswith(pattern) for pattern in exclude_dir_patterns):
+                report(f"Skipping header: {rel_path}")
+                continue
+
+            original_content = header_file.read_text(encoding="utf-8")
+
+            # Check if already wrapped (idempotency check)
+            if original_content.startswith(wrap_start_marker):
+                report(f"Already wrapped, skipping: {rel_path}")
+                continue
+
+            wrapped_content = (
+                wrap_start_marker
+                + f"{original_content}"
+                + "\n#else\n"
+                + '#error "This file should not be included when either TORCH_STABLE_ONLY or TORCH_TARGET_VERSION is defined."\n'
+                + "#endif  // !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)\n"
+            )
+
+            header_file.write_text(wrapped_content, encoding="utf-8")
+            report(f"Wrapped header: {rel_path}")
+
+    def _copy_ppu_compat_headers(self) -> None:
+        src, dst = CWD / ".ppu_compat", Path(self.build_lib) / "torch" / ".ppu_compat"
+        if not src.is_dir():
+            return
+        dst.mkdir(parents=True, exist_ok=True)
+        for f in src.glob("*.h"):
+            shutil.copy2(f, dst / f.name)
+
+    def _embed_libomp(self) -> None:
+        # Copy libiomp5.dylib/libomp.dylib inside the wheel package on MacOS
+        build_lib = Path(self.build_lib)
+        build_torch_lib_dir = build_lib / "torch" / "lib"
+        build_torch_include_dir = build_lib / "torch" / "include"
+        libtorch_cpu_path = build_torch_lib_dir / "libtorch_cpu.dylib"
+        if not libtorch_cpu_path.exists():
+            return
+        # Parse libtorch_cpu load commands
+        otool_cmds = (
+            subprocess.check_output(["otool", "-l", str(libtorch_cpu_path)])
+            .decode("utf-8")
+            .split("\n")
+        )
+        rpaths: list[str] = []
+        libs: list[str] = []
+        for idx, line in enumerate(otool_cmds):
+            if line.strip() == "cmd LC_LOAD_DYLIB":
+                lib_name = otool_cmds[idx + 2].strip()
+                assert lib_name.startswith("name ")
+                libs.append(lib_name.split(" ", 1)[1].rsplit("(", 1)[0][:-1])
+
+            if line.strip() == "cmd LC_RPATH":
+                rpath = otool_cmds[idx + 2].strip()
+                assert rpath.startswith("path ")
+                rpaths.append(rpath.split(" ", 1)[1].rsplit("(", 1)[0][:-1])
+
+        omplib_path: str = get_cmake_cache_vars()["OpenMP_libomp_LIBRARY"]  # type: ignore[assignment]
+        omplib_name: str = get_cmake_cache_vars()["OpenMP_C_LIB_NAMES"]  # type: ignore[assignment]
+        omplib_name += ".dylib"
+        omplib_rpath_path = os.path.join("@rpath", omplib_name)
+
+        # This logic is fragile and checks only two cases:
+        # - libtorch_cpu depends on `@rpath/libomp.dylib`e (happens when built inside miniconda environment)
+        # - libtorch_cpu depends on `/abs/path/to/libomp.dylib` (happens when built with libomp from homebrew)
+        if not any(c in libs for c in [omplib_path, omplib_rpath_path]):
+            return
+
+        # Copy libomp/libiomp5 from rpath locations
+        target_lib = build_torch_lib_dir / omplib_name
+        libomp_relocated = False
+        install_name_tool_args: list[str] = []
+        for rpath in rpaths:
+            source_lib = os.path.join(rpath, omplib_name)
+            if not os.path.exists(source_lib):
+                continue
+            self.copy_file(source_lib, target_lib)
+            # Delete old rpath and add @loader_lib to the rpath
+            # This should prevent deallocate from attempting to package another instance
+            # of OpenMP library in torch wheel as well as loading two libomp.dylib into
+            # the address space, as libraries are cached by their unresolved names
+            install_name_tool_args = [
+                "-rpath",
+                rpath,
+                "@loader_path",
+            ]
+            libomp_relocated = True
+            break
+        if not libomp_relocated and os.path.exists(omplib_path):
+            self.copy_file(omplib_path, target_lib)
+            install_name_tool_args = [
+                "-change",
+                omplib_path,
+                omplib_rpath_path,
+            ]
+            if "@loader_path" not in rpaths:
+                install_name_tool_args += [
+                    "-add_rpath",
+                    "@loader_path",
+                ]
+            libomp_relocated = True
+        if libomp_relocated:
+            install_name_tool_args = [
+                "install_name_tool",
+                *install_name_tool_args,
+                str(libtorch_cpu_path),
+            ]
+            subprocess.check_call(install_name_tool_args)
+        # Copy omp.h from OpenMP_C_FLAGS and copy it into include folder
+        omp_cflags: str = get_cmake_cache_vars()["OpenMP_C_FLAGS"]  # type: ignore[assignment]
+        if not omp_cflags:
+            return
+        for include_dir in [
+            Path(f.removeprefix("-I"))
+            for f in omp_cflags.split(" ")
+            if f.startswith("-I")
+        ]:
+            omp_h = include_dir / "omp.h"
+            if not omp_h.exists():
+                continue
+            target_omp_h = build_torch_include_dir / "omp.h"
+            self.copy_file(omp_h, target_omp_h)
+            break
+
     def run(self) -> None:
         # Report build options. This is run after the build completes so # `CMakeCache.txt` exists
         # and we can get an accurate report on what is used and what is not.
@@ -973,11 +1340,76 @@ class build_ext(setuptools.command.build_ext.build_ext):
 
         super().run()
 
+        if str2bool(os.getenv("USE_SAIL")):
+            self._copy_ppu_compat_headers()
+
+        # Wrap headers with TORCH_STABLE_ONLY and TORCH_TARGET_VERSION guards
+        build_lib = Path(self.build_lib)
+        build_torch_include_dir = build_lib / "torch" / "include"
+        if build_torch_include_dir.exists():
+            report(
+                "-- Wrapping header files with if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)"
+            )
+            self._wrap_headers_with_macro(build_torch_include_dir)
+
+        if IS_DARWIN:
+            self._embed_libomp()
+
+        # Copy the essential export library to compile C++ extensions.
+        if IS_WINDOWS:
+            build_temp = Path(self.build_temp)
+            build_lib = Path(self.build_lib)
+
+            ext_filename = self.get_ext_filename("_C")
+            lib_filename = ".".join(ext_filename.split(".")[:-1]) + ".lib"
+
+            export_lib = build_temp / "torch" / "csrc" / lib_filename
+            target_lib = build_lib / "torch" / "lib" / "_C.lib"
+
+            # Create "torch/lib" directory if not exists.
+            # (It is not created yet in "develop" mode.)
+            target_dir = target_lib.parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+            self.copy_file(export_lib, target_lib)
+
+    def build_extensions(self) -> None:
+        self.create_compile_commands()
+
+        super().build_extensions()
+
     def get_outputs(self) -> list[str]:
         outputs = super().get_outputs()
         outputs.append(os.path.join(self.build_lib, "caffe2"))
         report(f"setup.py::get_outputs returning {outputs}")
         return outputs
+
+    def create_compile_commands(self) -> None:
+        def load(file: Path) -> list[dict[str, Any]]:
+            return json.loads(file.read_text(encoding="utf-8"))
+
+        ninja_files = (CWD / BUILD_DIR).glob("*compile_commands.json")
+        cmake_files = (CWD / "torch" / "lib" / "build").glob("*/compile_commands.json")
+        all_commands = [
+            entry
+            for f in itertools.chain(ninja_files, cmake_files)
+            for entry in load(f)
+        ]
+
+        # cquery does not like c++ compiles that start with gcc.
+        # It forgets to include the c++ header directories.
+        # We can work around this by replacing the gcc calls that python
+        # setup.py generates with g++ calls instead
+        for command in all_commands:
+            if command["command"].startswith("gcc "):
+                command["command"] = "g++ " + command["command"][4:]
+
+        new_contents = json.dumps(all_commands, indent=2)
+        contents = ""
+        compile_commands_json = CWD / "compile_commands.json"
+        if compile_commands_json.exists():
+            contents = compile_commands_json.read_text(encoding="utf-8")
+        if contents != new_contents:
+            compile_commands_json.write_text(new_contents, encoding="utf-8")
 
 
 class bdist_wheel(setuptools.command.bdist_wheel.bdist_wheel):
@@ -985,8 +1417,7 @@ class bdist_wheel(setuptools.command.bdist_wheel.bdist_wheel):
         super().write_wheelfile(*args, **kwargs)
 
         if BUILD_LIBTORCH_WHL:
-            if self.bdist_dir is None:
-                raise AssertionError("self.bdist_dir must not be None")
+            assert self.bdist_dir is not None
             bdist_dir = Path(self.bdist_dir)
             # Remove extraneneous files in the libtorch wheel
             for file in itertools.chain(
@@ -1011,18 +1442,47 @@ class clean(Command):
         pass
 
     def run(self) -> None:
-        _clean()
+        ignores = (CWD / ".gitignore").read_text(encoding="utf-8")
+        for wildcard in filter(None, ignores.splitlines()):
+            if wildcard.strip().startswith("#"):
+                if "BEGIN NOT-CLEAN-FILES" in wildcard:
+                    # Marker is found and stop reading .gitignore.
+                    break
+                # Ignore lines which begin with '#'.
+            else:
+                # Don't remove absolute paths from the system
+                wildcard = wildcard.lstrip("./")
+                for filename in glob.iglob(wildcard):
+                    try:
+                        os.remove(filename)
+                    except OSError:
+                        shutil.rmtree(filename, ignore_errors=True)
 
 
-class BinaryDistribution(Distribution):
-    # torch._C is built by CMake (torch/CMakeLists.txt), so setuptools has
-    # no ext_modules. Force the wheel to be tagged as a binary distribution
-    # so bdist_wheel uses the binary layout (only files listed via
-    # package_data / data_files are packaged) rather than the purelib
-    # layout, which would dump the entire build/lib/ tree -- including
-    # CMake's test artifacts -- into the wheel at site-packages root.
-    def has_ext_modules(self) -> bool:
-        return True
+class sailify(Command):
+    """Convert CUDA sources to PPU sources with Sailify.
+
+    In-place (default): this tree is rewritten. Out-of-place
+    (SAILIFY_OUTPUT_DIR set): the converted tree is written there and this
+    tree is left untouched. In neither case is a wheel produced; for
+    out-of-place runs run ``bdist_wheel`` in the converted tree afterwards.
+    Re-running is safe: an up-to-date tree (checked via the ``.sailify_done``
+    marker) is skipped unless SAILIFY_FORCE=1.
+    """
+
+    description = "convert CUDA sources to PPU sources with Sailify"
+    user_options: ClassVar[list[tuple[str, str | None, str]]] = []
+
+    def initialize_options(self) -> None:
+        pass
+
+    def finalize_options(self) -> None:
+        pass
+
+    def run(self) -> None:
+        if not str2bool(os.getenv("USE_SAIL")):
+            raise RuntimeError("The 'sailify' command requires USE_SAIL=1.")
+        run_sailify_conversion()
 
 
 def get_cmake_cache_vars() -> defaultdict[str, CMakeValue]:
@@ -1040,6 +1500,7 @@ def configure_extension_build() -> tuple[
     list[str],  # packages
     dict[str, list[str]],  # entry_points
     list[str],  # extra_install_requires
+    dict[str, str],  # package_dir
 ]:
     r"""Configures extension build options according to system environment and user's choice.
 
@@ -1053,7 +1514,57 @@ def configure_extension_build() -> tuple[
     # Configure compile flags
     ################################################################################
 
+    library_dirs: list[str] = [str(TORCH_LIB_DIR)]
     extra_install_requires: list[str] = []
+
+    if IS_WINDOWS:
+        # /NODEFAULTLIB makes sure we only link to DLL runtime
+        # and matches the flags set for protobuf and ONNX
+        extra_link_args: list[str] = ["/NODEFAULTLIB:LIBCMT.LIB"]
+        # /MD links against DLL runtime
+        # and matches the flags set for protobuf and ONNX
+        # /EHsc is about standard C++ exception handling
+        extra_compile_args: list[str] = ["/MD", "/FS", "/EHsc"]
+    else:
+        extra_link_args = []
+        extra_compile_args = [
+            "-Wall",
+            "-Wextra",
+            "-Wno-strict-overflow",
+            "-Wno-unused-parameter",
+            "-Wno-missing-field-initializers",
+            "-Wno-unknown-pragmas",
+            # Python 2.6 requires -fno-strict-aliasing, see
+            # http://legacy.python.org/dev/peps/pep-3123/
+            # We also depend on it in our code (even Python 3).
+            "-fno-strict-aliasing",
+        ]
+
+    main_compile_args: list[str] = []
+    main_libraries: list[str] = ["torch_python"]
+
+    main_link_args: list[str] = []
+    main_sources: list[str] = ["torch/csrc/stub.c"]
+
+    if BUILD_LIBTORCH_WHL:
+        main_libraries = ["torch"]
+        main_sources = []
+
+    if build_type.is_debug():
+        if IS_WINDOWS:
+            extra_compile_args += ["/Z7"]
+            extra_link_args += ["/DEBUG:FULL"]
+        else:
+            extra_compile_args += ["-O0", "-g"]
+            extra_link_args += ["-O0", "-g"]
+
+    if build_type.is_rel_with_deb_info():
+        if IS_WINDOWS:
+            extra_compile_args += ["/Z7"]
+            extra_link_args += ["/DEBUG:FULL"]
+        else:
+            extra_compile_args += ["-g"]
+            extra_link_args += ["-g"]
 
     # pypi cuda package that requires installation of cuda runtime, cudnn and cublas
     # should be included in all wheels uploaded to pypi
@@ -1064,12 +1575,39 @@ def configure_extension_build() -> tuple[
             map(str.strip, pytorch_extra_install_requires.split("|"))
         )
 
+    # Cross-compile for M1
+    if IS_DARWIN:
+        macos_target_arch = os.getenv("CMAKE_OSX_ARCHITECTURES", "")
+        if macos_target_arch in ["arm64", "x86_64"]:
+            macos_sysroot_path = os.getenv("CMAKE_OSX_SYSROOT")
+            if macos_sysroot_path is None:
+                macos_sysroot_path = (
+                    subprocess.check_output(
+                        ["xcrun", "--show-sdk-path", "--sdk", "macosx"]
+                    )
+                    .decode("utf-8")
+                    .strip()
+                )
+            extra_compile_args += [
+                "-arch",
+                macos_target_arch,
+                "-isysroot",
+                macos_sysroot_path,
+            ]
+            extra_link_args += ["-arch", macos_target_arch]
+
+    def make_relative_rpath_args(path: str) -> list[str]:
+        if IS_DARWIN:
+            return ["-Wl,-rpath,@loader_path/" + path]
+        elif IS_WINDOWS:
+            return []
+        else:
+            return ["-Wl,-rpath,$ORIGIN/" + path]
+
     ################################################################################
     # Declare extensions and package
     ################################################################################
 
-    # torch._C is now built by CMake (torch/CMakeLists.txt) and installed
-    # into the cmake install prefix, which maps to torch/ in the source tree.
     ext_modules: list[Extension] = []
     # packages that we want to install into site-packages and include them in wheels
     includes = ["torch", "torch.*", "torchgen", "torchgen.*"]
@@ -1079,12 +1617,47 @@ def configure_extension_build() -> tuple[
         includes.extend(["functorch", "functorch.*"])
     else:
         excludes.extend(["functorch", "functorch.*"])
+
+    # When USE_SAIL, vendor sailify under torch.sailify (like torch.utils.hipify).
+    # Runtime only needs .py files; compat headers are pre-built into torch/.ppu_compat/.
+    package_dir = {}
+    sailify_packages = []
+    if str2bool(os.getenv("USE_SAIL")):
+        sailify_src = CWD / "third_party" / "sailify"
+        includes.extend(["torch.sailify", "torch.sailify.*"])
+        # Discover subpackages under sailify source, then prefix with torch.
+        _sailify_found = find_packages(
+            where=str(sailify_src), include=["sailify", "sailify.*"]
+        )
+        sailify_packages = ["torch." + p for p in _sailify_found]
+        package_dir = {"torch.sailify": str(sailify_src / "sailify")}
+
     packages = find_packages(include=includes, exclude=excludes)
+    packages.extend(sailify_packages)
+    C = Extension(
+        "torch._C",
+        libraries=main_libraries,
+        sources=main_sources,
+        language="c",
+        extra_compile_args=[
+            *main_compile_args,
+            *extra_compile_args,
+        ],
+        include_dirs=[],
+        library_dirs=library_dirs,
+        extra_link_args=[
+            *extra_link_args,
+            *main_link_args,
+            *make_relative_rpath_args("lib"),
+        ],
+    )
+    ext_modules.append(C)
 
     cmdclass = {
         "bdist_wheel": bdist_wheel,
         "build_ext": build_ext,
         "clean": clean,
+        "sailify": sailify,
     }
 
     entry_points = {
@@ -1101,7 +1674,7 @@ def configure_extension_build() -> tuple[
         entry_points["console_scripts"].append(
             "torchfrtrace = torch.distributed.flight_recorder.fr_trace:main",
         )
-    return ext_modules, cmdclass, packages, entry_points, extra_install_requires
+    return ext_modules, cmdclass, packages, entry_points, extra_install_requires, package_dir
 
 
 # post run, warnings, printed at the end to make them more visible
@@ -1127,6 +1700,575 @@ def print_box(msg: str) -> None:
     print("+" + "-" * (max_width + 4) + "+", file=sys.stderr, flush=True)
 
 
+def apply_patch(patch_file: str, target_root: str) -> None:
+    import re
+
+    if not os.path.isfile(patch_file):
+        raise FileNotFoundError(f"The patch file doesn't exist: {patch_file}")
+
+    command = ["patch", "--batch", "-p1", "-i", patch_file]
+    dry_run = subprocess.run(
+        [*command, "--dry-run"],
+        cwd=target_root,
+        capture_output=True,
+        text=True,
+    )
+    # A dry run that succeeds by reversing the patch (returncode 0 with
+    # "Assuming -R") must not be applied for real: it would undo an
+    # already-applied patch. Check the output first, then the exit code.
+    combined_output = (dry_run.stdout or "") + (dry_run.stderr or "")
+    if re.search(
+        "already exists|Reversed|previously applied",
+        combined_output,
+        re.IGNORECASE,
+    ):
+        print("Patch already applied, skipping.")
+        return
+    if dry_run.returncode != 0:
+        print(f"error_output: {combined_output}")
+        raise RuntimeError(f"Failed to validate patch before applying: {patch_file}")
+
+    subprocess.run(command, cwd=target_root, check=True)
+    print(f"Apply patch: {patch_file}")
+
+
+def apply_cutlass_sail_patch(patch_file: str, target_root: str) -> None:
+    """Apply the CUTLASS SAIL compatibility patch as one logical unit."""
+    markers = {
+        "include/cutlass/bfloat16.h": (
+            "struct numeric_limits<cutlass::bfloat16_t>",
+            "namespace platform",
+        ),
+        "include/cutlass/half.h": (
+            "struct numeric_limits<cutlass::half_t>",
+            "namespace cutlass {\nnamespace platform {",
+        ),
+        "include/cutlass/arch/arch.h": ("using Sm80 = PPU0010;",),
+        "include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp": (
+            "using Sm80EVT = PPU0010EVT<NodeOp, ChildOps...>;",
+        ),
+    }
+    already_applied = True
+    for relative_path, required_markers in markers.items():
+        content = Path(target_root, relative_path).read_text(
+            encoding="utf-8", errors="replace"
+        )
+        if not all(marker in content for marker in required_markers):
+            already_applied = False
+            break
+    if already_applied:
+        print("CUTLASS SAIL compatibility patch already applied, skipping.")
+        return
+    apply_patch(patch_file, target_root)
+
+
+def apply_fa_patches_with_markers(
+    namespace_patch: str, num_splits_patch: str, fa_root: str
+) -> None:
+    """Apply the flash-attention patches idempotently.
+
+    Long-lived checkouts carry these patches in the source tree, and an
+    out-of-place sailify copy inherits them. Re-applying then makes
+    ``patch`` detect the changes and reverse them (``Assuming -R``),
+    which deletes namespace_config.h and strips the num_splits guard.
+    Detect the applied state by content markers and skip instead.
+    """
+    namespace_header = Path(
+        fa_root, "csrc", "flash_attn", "src", "namespace_config.h"
+    )
+    if namespace_header.is_file() and "FLASH_NAMESPACE_CONFIG_H" in namespace_header.read_text(
+        encoding="utf-8", errors="replace"
+    ):
+        print("flash-attention namespace patch already applied, skipping.")
+    else:
+        apply_patch(namespace_patch, fa_root)
+
+    flash_api = Path(fa_root, "csrc", "flash_attn", "flash_api.cpp")
+    if flash_api.is_file() and "num_splits is not supported on PPU" in flash_api.read_text(
+        encoding="utf-8", errors="replace"
+    ):
+        print("flash-attention num_splits guard already applied, skipping.")
+    else:
+        apply_patch(num_splits_patch, fa_root)
+
+
+def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
+    return FileNotFoundError(
+        "Required third-party source is missing: "
+        f"{os.path.join(torch_root, submodule_path)}\n"
+        "Please fetch it with git submodule, for example:\n"
+        f"  git submodule update --init --recursive {submodule_path}\n"
+        "Or initialize all required submodules with:\n"
+        "  git submodule update --init --recursive"
+    )
+
+
+def _cudafy_stamp_path(target_root: str, command: str, version: str) -> str:
+    safe_version = version.replace("/", "_")
+    return os.path.join(target_root, ".cudafy-for-sail", f"{command}-{safe_version}.stamp")
+
+
+def _write_cudafy_stamp(target_root: str, command: str, version: str) -> None:
+    stamp_path = _cudafy_stamp_path(target_root, command, version)
+    os.makedirs(os.path.dirname(stamp_path), exist_ok=True)
+    with open(stamp_path, "w") as f:
+        f.write(f"command={command}\nversion={version}\n")
+
+
+def _file_contains(path: str, needle: str) -> bool:
+    if not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            return needle in f.read()
+    except OSError:
+        return False
+
+
+def _tree_contains_any(root: str, markers: tuple[str, ...]) -> bool:
+    source_suffixes = (
+        ".c", ".cc", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".inl",
+        ".py", ".txt", ".cmake", ".md",
+    )
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in {".git", "build", "dist", "__pycache__"}]
+        for filename in filenames:
+            if not filename.endswith(source_suffixes):
+                continue
+            path = os.path.join(dirpath, filename)
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+            except OSError:
+                continue
+            if any(marker in content for marker in markers):
+                return True
+    return False
+
+
+def _is_cudafy_converted(command: str, version: str, target_root: str) -> bool:
+    if os.path.exists(_cudafy_stamp_path(target_root, command, version)):
+        return True
+
+    if command == "flash-attention":
+        return not _tree_contains_any(
+            target_root,
+            (
+                "hggc", "HGGC", "HGTX", "__HGGCCC__",
+                "PPU_", "PPU_CP_ASYNC", "CUTE_ARCH_CP_ASYNC_PPU_ENABLED",
+            ),
+        )
+
+    if command == "actlize":
+        return (
+            os.path.exists(os.path.join(target_root, "cute", "hggc_arch_compat.h"))
+            and _file_contains(
+                os.path.join(target_root, "cutlass", "arch", "mma_sm80.h"),
+                "File name compatibility shim",
+            )
+        )
+
+    return False
+
+
+def run_cudafy_once(
+    torch_root: str,
+    command: str,
+    version: str,
+    target_root: str,
+) -> None:
+    cudafy_script = os.path.join(
+        torch_root, "third_party", "cudafy-for-sail", "cudafy.py"
+    )
+    if not os.path.isfile(cudafy_script):
+        raise _missing_submodule_error(torch_root, "third_party/cudafy-for-sail")
+    if not os.path.isdir(target_root):
+        target_arg = os.path.relpath(target_root, torch_root)
+        raise _missing_submodule_error(torch_root, target_arg)
+
+    if _is_cudafy_converted(command, version, target_root):
+        print(f"Skip cudafy {command} {version}: already converted.")
+        return
+
+    target_arg = os.path.relpath(target_root, torch_root)
+    cudafy_arg = os.path.relpath(cudafy_script, torch_root)
+    cli_version = (
+        version[1:] if command == "actlize" and version.startswith("v") else version
+    )
+    cmd = ["python3", cudafy_arg, command, f"--version={cli_version}", target_arg]
+    print(f"Run cudafy: {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=torch_root, check=True)
+    _write_cudafy_stamp(target_root, command, version)
+
+
+def check_path_exists(path: str) -> None:
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"The path doesn't exist: '{path}', please check PPU_SDK environment."
+        )
+
+
+def Init_ppu_build_env() -> None:
+    # Native SAIL builds use PCCL from the PPU SDK; cudafy builds keep the
+    # CUDA-compatible NCCL layout. Explicit user paths always take precedence.
+    use_sail = str2bool(os.getenv("USE_SAIL"))
+    if use_sail:
+        ppu_nccl_path = "/usr/local/PPU_SDK/targets/x86_64-linux/include"
+        ppu_nccl_lib = "/usr/local/PPU_SDK/targets/x86_64-linux/lib"
+        print("PPU build mode: SAIL (USE_SAIL=1), NCCL mapped to PCCL")
+    else:
+        ppu_nccl_path = "/usr/local/PPU_SDK/CUDA_SDK/include"
+        ppu_nccl_lib = "/usr/local/PPU_SDK/CUDA_SDK/lib64"
+
+    # check PPU_SDK path
+    check_path_exists(ppu_nccl_path)
+    check_path_exists(ppu_nccl_lib)
+
+    # specify where nccl include is installed
+    if os.getenv("NCCL_INCLUDE_DIR") is None:
+        os.environ["NCCL_INCLUDE_DIR"] = ppu_nccl_path
+        print(f"Set NCCL_INCLUDE_DIR to: {ppu_nccl_path}")
+    else:
+        print(f"Using existing NCCL_INCLUDE_DIR: {os.getenv('NCCL_INCLUDE_DIR')}")
+
+    # specify where nccl lib is installed
+    if os.getenv("NCCL_LIB_DIR") is None:
+        os.environ["NCCL_LIB_DIR"] = ppu_nccl_lib
+        print(f"Set NCCL_LIB_DIR to: {ppu_nccl_lib}")
+    else:
+        print(f"Using existing NCCL_LIB_DIR: {os.getenv('NCCL_LIB_DIR')}")
+
+    # enable building flash attention for scaled dot product attention
+    if os.getenv("USE_FLASH_ATTENTION") is None:
+        os.environ["USE_FLASH_ATTENTION"] = "True"
+
+    # enable building memory efficient attention for scaled dot product attention
+    if os.getenv("USE_MEM_EFF_ATTENTION") is None:
+        os.environ["USE_MEM_EFF_ATTENTION"] = "True"
+
+    # SAIL uses native PPU architecture names; cudafy keeps CUDA compute
+    # capabilities for the compatibility compiler.
+    if use_sail:
+        if os.getenv("TORCH_CUDA_ARCH_LIST"):
+            raise RuntimeError(
+                "SAIL builds do not support TORCH_CUDA_ARCH_LIST. "
+                "Unset it and set PYTORCH_SAIL_ARCH to ppu_10, ppu_15, "
+                "or a semicolon-separated list of both."
+            )
+        sail_arch = os.getenv("PYTORCH_SAIL_ARCH")
+        if not sail_arch:
+            raise RuntimeError(
+                "SAIL builds require PYTORCH_SAIL_ARCH. Set it to ppu_10, "
+                "ppu_15, or a semicolon-separated list of both."
+            )
+        sail_arches = [
+            arch for arch in sail_arch.replace(" ", ";").split(";") if arch
+        ]
+        unsupported_arches = sorted(set(sail_arches) - {"ppu_10", "ppu_15"})
+        if not sail_arches or unsupported_arches:
+            invalid = ", ".join(unsupported_arches) or "empty value"
+            raise RuntimeError(
+                f"Unsupported PYTORCH_SAIL_ARCH value(s): {invalid}. "
+                "Supported values are ppu_10 and ppu_15."
+            )
+    elif os.getenv("TORCH_CUDA_ARCH_LIST") is None:
+        os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
+
+    # enable nccl
+    if os.getenv("USE_NCCL") is None:
+        os.environ["USE_NCCL"] = "True"
+
+    # enable use of system-wide nccl
+    if os.getenv("USE_SYSTEM_NCCL") is None:
+        os.environ["USE_SYSTEM_NCCL"] = "1"
+
+    if os.getenv("BUILD_TEST") is None:
+        os.environ["BUILD_TEST"] = "False"
+
+    print("Init ppu build env done ...")
+
+
+# Written into a converted tree so that re-running setup.py there builds
+# instead of trying to convert an already-converted tree.
+SAILIFY_MARKER = ".sailify_done"
+
+# Extensions sailify rewrites (mirrors its DEFAULT_EXTENSIONS) and directories
+# that cannot change the result but would dominate the walk.
+_SAILIFY_EXTS = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".hpp", ".inl")
+_SAILIFY_FINGERPRINT_EXTS = _SAILIFY_EXTS + (
+    ".py",
+    ".cmake",
+    ".txt",
+    ".json",
+    ".patch",
+    ".in",
+)
+_SAILIFY_SKIP_DIRS = {".git", "build", "dist", "__pycache__", ".ppu_compat"}
+
+
+def _sailify_fingerprint() -> str:
+    """Return a stable metadata fingerprint for all convertible sources."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(CWD):
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in _SAILIFY_SKIP_DIRS
+        )
+        for name in sorted(filenames):
+            if not name.endswith(_SAILIFY_FINGERPRINT_EXTS):
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                stat = os.lstat(path)
+            except OSError:
+                continue
+            relative_path = os.path.relpath(path, CWD)
+            digest.update(relative_path.encode("utf-8", errors="surrogateescape"))
+            digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+            count += 1
+    return f"sources={count} metadata_sha256={digest.hexdigest()}"
+
+
+def run_sailify_conversion() -> bool:
+    """Convert this tree's CUDA sources to PPU. Returns True when the conversion
+    was in place (so the caller should keep building this tree), False when it
+    went to a separate output tree (so the caller should stop -- the build has
+    to run over there).
+
+    Two modes:
+
+    * In-place (default). sailify() with an empty output_directory falls
+      back to output_directory = project_directory and rewrites every
+      .cu/.cuh/.c/.cc/.cpp/.h/.hpp/.inl under the tree -- including third_party,
+      which is not in its SKIP_DIRS. The build continues on this tree in the
+      same invocation. This is only safe on a throwaway checkout (CI) where
+      there is no committable tree or pristine submodule to protect; on a dev
+      tree set SAILIFY_OUTPUT_DIR to convert out of place instead.
+
+    * Out-of-place (SAILIFY_OUTPUT_DIR set). The result is written elsewhere
+      and this tree is left untouched, staying upstream CUDA code plus our
+      PPU patches with the cutlass/gloo submodules pristine. Because the
+      result lands elsewhere, this tree is still CUDA code afterwards and
+      cannot be built; the caller stops.
+
+    Re-running is safe and cheap. sailify's _copytree_compat() overwrites the
+    output tree file by file (swallowing errors), so converting again would
+    silently discard edits made there while debugging. A fingerprint of the
+    sources is recorded in the target tree and the conversion is skipped while
+    it still matches; SAILIFY_FORCE=1 converts regardless.
+    """
+    out_dir_env = os.getenv("SAILIFY_OUTPUT_DIR")
+    explicit_in_place = str2bool(os.getenv("SAILIFY_IN_PLACE"))
+    if explicit_in_place and out_dir_env:
+        raise RuntimeError(
+            "SAILIFY_IN_PLACE and SAILIFY_OUTPUT_DIR are mutually exclusive; "
+            "unset one of them."
+        )
+    # In-place is the default: without SAILIFY_OUTPUT_DIR this tree is
+    # rewritten and the build continues on it. SAILIFY_IN_PLACE=1 is accepted
+    # as an explicit declaration of the default behavior.
+    in_place = explicit_in_place or not out_dir_env
+    if in_place:
+        out_dir = os.path.abspath(CWD)
+    else:
+        out_dir = os.path.abspath(out_dir_env)
+        if out_dir == os.path.abspath(CWD):
+            raise RuntimeError(
+                f"SAILIFY_OUTPUT_DIR must differ from the source tree ({CWD}); "
+                "unset it to rewrite this tree in place instead."
+            )
+
+    marker = Path(out_dir, SAILIFY_MARKER)
+    fingerprint = _sailify_fingerprint()
+    forced = str2bool(os.getenv("SAILIFY_FORCE"))
+    if marker.is_file() and not forced:
+        previous = marker.read_text(encoding="utf-8")
+        if f"fingerprint: {fingerprint}\n" in previous:
+            print(
+                f"sailify: {out_dir} is already up to date ({fingerprint}); "
+                "skipping conversion. Use SAILIFY_FORCE=1 to convert anyway."
+            )
+            if not in_place:
+                _print_sailify_handover(out_dir)
+            return in_place
+        print("sailify: sources changed since the last conversion, re-converting.")
+        print(f"  recorded: {previous.strip()}")
+        print(f"  current : fingerprint: {fingerprint}")
+        print(
+            "  NOTE: this overwrites source files in the target tree; any edits "
+            "made there will be lost."
+        )
+
+    sailify_src = CWD / "third_party" / "sailify"
+    if not sailify_src.is_dir():
+        raise FileNotFoundError(
+            f"sailify source not found at {sailify_src}. "
+            "Ensure the submodule is checked out."
+        )
+    # Make sailify importable without `pip install -e`
+    if str(sailify_src) not in sys.path:
+        sys.path.insert(0, str(sailify_src))
+    from sailify.sailify_python import sailify
+
+    extra_mapping = str(CWD / "third_party" / "sailify_torch_extra_mappings.json")
+    # These CUTLASS files are intentionally handled by the SAIL patch below.
+    # Converting them as well would move std::numeric_limits into
+    # cutlass::platform and then add the same specialization a second time.
+    ignores = [
+        "**/third_party/cutlass/include/cutlass/bfloat16.h",
+        "**/third_party/cutlass/include/cutlass/half.h",
+        "**/third_party/cutlass/include/cutlass/arch/arch.h",
+        "**/third_party/cutlass/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp",
+        *(
+            pattern
+            for pattern in os.getenv("SAILIFY_IGNORES", "").split(os.pathsep)
+            if pattern
+        ),
+    ]
+    print(f"=== sailify: {CWD} -> {'(in place)' if in_place else out_dir} ===")
+    # Drop a stale marker first: if the conversion dies halfway the tree is
+    # inconsistent, and no marker means the next run redoes it instead of
+    # trusting a half-converted tree.
+    if marker.is_file():
+        marker.unlink()
+    results = sailify(
+        project_directory=str(CWD),
+        # Empty output_directory makes sailify convert in place; a distinct dir
+        # makes it copy first, then convert.
+        output_directory="" if in_place else out_dir,
+        extra_mapping=extra_mapping,
+        ignores=ignores,
+        verbose=True,
+    )
+    n_ok = sum(1 for r in results.values() if r.status == "ok")
+    n_skip = sum(1 for r in results.values() if r.status == "skipped")
+    failures = {
+        path: result.status
+        for path, result in results.items()
+        if result.status not in {"ok", "skipped"}
+    }
+    print(f"sailify: {n_ok} files converted, {n_skip} files skipped.")
+    if failures:
+        details = "\n".join(
+            f"  {path}: {status}" for path, status in list(failures.items())[:20]
+        )
+        raise RuntimeError(
+            f"sailify failed to convert {len(failures)} file(s):\n{details}"
+        )
+
+    # Written only on success, so an interrupted run leaves no marker.
+    marker.write_text(
+        f"source: {CWD}\nin_place: {in_place}\nfingerprint: {fingerprint}\n",
+        encoding="utf-8",
+    )
+    if not in_place:
+        _print_sailify_handover(out_dir)
+    return in_place
+
+
+def _ensure_sailify_command() -> None:
+    """Make a `sailify` executable visible to the CMake run.
+
+    gloo's cmake/Sailify.cmake does
+        find_program(SAILIFY_COMMAND sailify)
+    at configure time to convert its own device sources -- that is what produces
+    gloo_hg -- and that command exists only once sailify's console_scripts entry
+    point has been installed. The PPU SDK does not ship it, despite what gloo's
+    "Ensure the PPU SDK environment is sourced" message suggests, so on a clean
+    checkout there is nothing to find and configure fails outright.
+
+    Rather than pip-installing mid-build, which would mutate the environment for
+    everything downstream, write a wrapper that runs the module straight out of
+    third_party/sailify and prepend it to PATH. CMake subprocesses inherit
+    os.environ, so find_program resolves it, and nothing outside this build is
+    touched. If no writable+executable location can be found, this raises with
+    the pip command to run by hand.
+
+    Gated on the checkout rather than on USE_SAIL: gloo includes Sailify.cmake
+    whenever its USE_PPU is on, which it inherits from torch's option(USE_PPU
+    ON) -- so a build that never set USE_SAIL can still need this.
+    """
+    if shutil.which("sailify"):
+        return  # already installed (e.g. pip install -e); leave it alone
+
+    sailify_src = CWD / "third_party" / "sailify"
+    if not (sailify_src / "sailify_cli.py").is_file():
+        # No sailify checkout at all: either not a PPU build or the submodule is
+        # missing. Say nothing and let CMake report it if it actually matters.
+        return
+
+    body = (
+        "#!/bin/sh\n"
+        # ${PYTHONPATH:+:$PYTHONPATH} keeps an unset PYTHONPATH from turning
+        # into ":<path>", whose leading empty entry Python reads as the cwd.
+        f'PYTHONPATH="{sailify_src}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        "export PYTHONPATH\n"
+        f'exec "{sys.executable}" -m sailify_cli "$@"\n'
+    )
+
+    # Check importability before bothering with a wrapper. sailify uses 3.9+
+    # builtin-generic subscripts, so on an older interpreter `import sailify`
+    # fails outright -- and `sailify --help` would not catch it, because those
+    # imports happen lazily inside the CLI. A version mismatch is also not
+    # something a different wrapper location would fix, so it belongs here
+    # rather than inside the fallback loop below.
+    try:
+        subprocess.check_output(
+            [sys.executable, "-c", "import sailify"],
+            env=dict(os.environ, PYTHONPATH=str(sailify_src)),
+            stderr=subprocess.STDOUT,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"sailify cannot be imported by {sys.executable}, which gloo's "
+            f"cmake/Sailify.cmake needs at configure time:\n"
+            f"{e.output.decode(errors='replace')}"
+        ) from e
+
+    # build/ is the natural home, but it is not always writable -- a tree built
+    # once as root leaves it owned by root. Fall back to a temp dir, then check
+    # the wrapper actually runs: /tmp is sometimes mounted noexec, and that
+    # would otherwise surface much later as an unexplained CMake failure.
+    for candidate in (CWD / "build" / "sailify_bin", None):
+        try:
+            if candidate is None:
+                bin_dir = Path(tempfile.mkdtemp(prefix="torch_sailify_bin_"))
+            else:
+                candidate.mkdir(parents=True, exist_ok=True)
+                bin_dir = candidate
+            wrapper = bin_dir / "sailify"
+            wrapper.write_text(body, encoding="utf-8")
+            wrapper.chmod(0o755)
+            subprocess.check_output(
+                [str(wrapper), "--help"], stderr=subprocess.STDOUT
+            )
+        except (OSError, subprocess.CalledProcessError) as e:
+            report(f"-- sailify wrapper in {candidate or 'a temp dir'} unusable: {e}")
+            continue
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        report(f"-- sailify not on PATH; generated wrapper at {wrapper}")
+        return
+
+    raise RuntimeError(
+        "Could not place a runnable `sailify` wrapper, which gloo's "
+        "cmake/Sailify.cmake needs at configure time. Install it manually:\n"
+        f"    pip install -e {sailify_src} --no-deps"
+    )
+
+
+def _print_sailify_handover(out_dir: str) -> None:
+    print(
+        "\n"
+        "=========================================================\n"
+        "This tree was NOT modified and is still CUDA code, so the\n"
+        "build has to run in the converted tree:\n"
+        f"    cd {out_dir}\n"
+        "    python3 setup.py bdist_wheel\n"
+        "========================================================="
+    )
+
 def main() -> None:
     if BUILD_LIBTORCH_WHL and BUILD_PYTHON_ONLY:
         raise RuntimeError(
@@ -1134,10 +2276,100 @@ def main() -> None:
             "Set one to 0 and rerun."
         )
 
+    use_sail = str2bool(os.getenv("USE_SAIL"))
+    if use_sail and not (CWD / SAILIFY_MARKER).exists():
+        converted_in_place = run_sailify_conversion()
+        if not converted_in_place:
+            sys.exit(0)
+
+    on_ppu = os.environ.get("PPU_SDK")
+    if on_ppu:
+        Init_ppu_build_env()
+        torch_root = os.path.dirname(os.path.abspath(__file__))
+        patch_root = os.path.join(torch_root, "third_party")
+        cutlass_root = os.path.join(patch_root, "cutlass")
+        cutlass_include_root = os.path.join(cutlass_root, "include")
+        if not os.path.exists(cutlass_root):
+            raise _missing_submodule_error(torch_root, "third_party/cutlass")
+
+        # cutlass is required independently of flash-attention.
+        if use_sail:
+            cutlass_patch_file = os.path.join(
+                patch_root,
+                "cutlass_platform_numeric_limits_and_arch_aliases.patch",
+            )
+            apply_cutlass_sail_patch(cutlass_patch_file, cutlass_root)
+        else:
+            # SAIL-only branch: the CUDA-compatible conversion path is disabled.
+            raise RuntimeError(
+                "CUDA-compatible builds are disabled on this SAIL-only "
+                "branch. Set USE_SAIL=1 to build."
+            )
+            # cudafy_root = os.path.join(patch_root, "cudafy-for-sail")
+            # if not os.path.exists(cudafy_root):
+            #     raise _missing_submodule_error(
+            #         torch_root, "third_party/cudafy-for-sail"
+            #     )
+            # run_cudafy_once(
+            #     torch_root,
+            #     "flash-attention",
+            #     "2.7.2",
+            #     fa_root,
+            # )
+            # run_cudafy_once(
+            #     torch_root,
+            #     "actlize",
+            #     "v0.8.0",
+            #     cutlass_include_root,
+            # )
+            # if str2bool(os.environ.get("USE_MEM_EFF_ATTENTION")):
+            #     xformers_root = os.path.join(patch_root, "xformers")
+            #     xformers_actlize_include = os.path.join(
+            #         xformers_root, "third_party", "actlize", "include"
+            #     )
+            #     if not os.path.isdir(xformers_root):
+            #         raise _missing_submodule_error(torch_root, "third_party/xformers")
+            #     if not os.path.isdir(xformers_actlize_include):
+            #         raise _missing_submodule_error(
+            #             torch_root, "third_party/xformers/third_party/actlize"
+            #         )
+            #     run_cudafy_once(
+            #         torch_root,
+            #         "xformers",
+            #         "0.0.27",
+            #         xformers_root,
+            #     )
+            #     run_cudafy_once(
+            #         torch_root,
+            #         "actlize",
+            #         "0.5.0",
+            #         xformers_actlize_include,
+            #     )
+            # cutlass_patch_file = os.path.join(
+            #     patch_root, "cutlass_platform_numeric_limits.patch"
+            # )
+        use_fa = os.environ.get("USE_FLASH_ATTENTION")
+        if use_fa in ["True", "1", "TRUE"]:
+            fa_root = os.path.join(patch_root, "flash-attention")
+            if not os.path.exists(fa_root):
+                raise _missing_submodule_error(torch_root, "third_party/flash-attention")
+
+            fa_patch_file = os.path.join(
+                patch_root, "flash_attention_namespace_config.patch"
+            )
+            fa_num_splits_patch = os.path.join(
+                patch_root, "flash_attention_num_splits_guard.patch"
+            )
+            apply_fa_patches_with_markers(fa_patch_file, fa_num_splits_patch, fa_root)
+
+        # SAIL-only branch: the cudafy (CUDA-compatible) patch path is disabled.
+        # else:
+        #     apply_patch(cutlass_patch_file, cutlass_root)
+
     install_requires = [
         "filelock",
         "typing-extensions>=4.10.0",
-        "setuptools>=77.0.3",
+        'setuptools ; python_version >= "3.12"',
         "sympy>=1.13.3",
         "networkx>=2.5.1",
         "jinja2",
@@ -1157,8 +2389,11 @@ def main() -> None:
         print(e, file=sys.stderr)
         sys.exit(1)
 
+
+    mirror_files_into_torchgen()
     if RUN_BUILD_DEPS:
         build_deps()
+        mirror_inductor_external_kernels()
 
     (
         ext_modules,
@@ -1166,18 +2401,13 @@ def main() -> None:
         packages,
         entry_points,
         extra_install_requires,
+        package_dir,
     ) = configure_extension_build()
     install_requires += extra_install_requires
 
     torch_package_data = [
         "py.typed",
-        # torch._C is built by CMake (torch/CMakeLists.txt) and installed into
-        # torch/.  Match this interpreter's exact extension suffix, not a glob:
-        # build_all.sh reuses one build/ dir across Python versions, so a glob
-        # would also pick up other ABIs' _C modules left behind in the tree.
-        f"_C{sysconfig.get_config_var('EXT_SUFFIX')}",
         "bin/*",
-        "bin/**/*",
         "test/*",
         "*.pyi",
         "**/*.pyi",
@@ -1205,6 +2435,15 @@ def main() -> None:
         "share/cmake/ATen/*.cmake",
         "share/cmake/Caffe2/*.cmake",
         "share/cmake/Caffe2/public/*.cmake",
+        # SAIL only: the HG language modules that public/hg_native.cmake needs
+        # in order to enable_language(HG) from an installed tree. CMake installs
+        # them (see the USE_SAIL install rules in CMakeLists.txt), but this
+        # allow-list decides what actually lands in the wheel, and its globs are
+        # not recursive -- hence one entry per level, plus .cmake.in for the
+        # compiler-info template. On non-SAIL builds these simply match nothing.
+        "share/cmake/Caffe2/cmake-hgcc/Modules/*.cmake",
+        "share/cmake/Caffe2/cmake-hgcc/Modules/*.cmake.in",
+        "share/cmake/Caffe2/cmake-hgcc/Modules/Compiler/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/upstream/*.cmake",
         "share/cmake/Caffe2/Modules_CUDA_fix/upstream/FindCUDA/*.cmake",
@@ -1271,6 +2510,16 @@ def main() -> None:
     exclude_package_data = {
         "torch": exclude_windows_libs,
     }
+    if str2bool(os.getenv("USE_SAIL")):
+        torch_package_data += [
+            ".ppu_compat/*.h",
+        ]
+        # Compat templates/headers for JIT-time .ppu_compat generation.
+        package_data["torch.sailify"] = [
+            "compatible_wrapper.h.tpl",
+            "*.h",
+            "unsupported_stubs/*.json",
+        ]
 
     if not BUILD_LIBTORCH_WHL:
         package_data["torchgen"] = torchgen_package_data
@@ -1282,10 +2531,10 @@ def main() -> None:
     setup(
         name=TORCH_PACKAGE_NAME,
         version=TORCH_VERSION,
-        distclass=BinaryDistribution,
         ext_modules=ext_modules,
         cmdclass=cmdclass,
         packages=packages,
+        package_dir=package_dir,
         entry_points=entry_points,
         install_requires=install_requires,
         package_data=package_data,

@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # RPATH stuff
 # see https://cmake.org/Wiki/CMake_RPATH_handling
 if(APPLE)
@@ -33,7 +34,7 @@ macro(enable_ubsan)
   endif()
 endmacro()
 
-# ---[ CUDA
+# ---[ CUDA / PPU-native
 if(USE_CUDA)
   # public/*.cmake uses CAFFE2_USE_*
   set(CAFFE2_USE_CUDA ${USE_CUDA})
@@ -41,7 +42,16 @@ if(USE_CUDA)
   set(CAFFE2_USE_CUSPARSELT ${USE_CUSPARSELT})
   set(CAFFE2_USE_CUFILE ${USE_CUFILE})
   set(CAFFE2_USE_NVRTC ${USE_NVRTC})
-  include(${CMAKE_CURRENT_LIST_DIR}/public/cuda.cmake)
+  # Branch point: CUDA-compatible mode goes through the standard cuda.cmake
+  # (find_package(CUDA) -> CUDA_SDK compat layer); SAIL mode goes through
+  # ppu_native.cmake was replaced by hg_native.cmake, which enables the
+  # vendored cmake-hgcc HG language and defines the same imported targets
+  # (torch::cudart, caffe2::cublas, ...) but backed by the PPU native SDK.
+  if(USE_SAIL)
+    include(${CMAKE_CURRENT_LIST_DIR}/public/hg_native.cmake)
+  else()
+    include(${CMAKE_CURRENT_LIST_DIR}/public/cuda.cmake)
+  endif()
   if(CAFFE2_USE_CUDA)
     # A helper variable recording the list of Caffe2 dependent libraries
     # torch::cudart is dealt with separately, due to CUDA_ADD_LIBRARY
@@ -978,11 +988,19 @@ endif(USE_LLVM)
 
 # ---[ cuDNN
 if(USE_CUDNN)
-  if(CUDNN_VERSION VERSION_LESS 8.5)
-    message(FATAL_ERROR "PyTorch needs CuDNN-8.5 or above, but found ${CUDNN_VERSION}. Builds are still possible with `USE_CUDNN=0`")
+  # XYH-551: Guard version check — CUDNN_VERSION may be empty if
+  # find_package(CUDNN) was not called (PPU sail path)
+  if(CUDNN_FOUND)
+    if(CUDNN_VERSION VERSION_LESS 8.5)
+      message(FATAL_ERROR "PyTorch needs CuDNN-8.5 or above, but found ${CUDNN_VERSION}. Builds are still possible with `USE_CUDNN=0`")
+    endif()
+  elseif(NOT USE_SAIL)
+    message(FATAL_ERROR "CuDNN not found. Builds are still possible with `USE_CUDNN=0`")
   endif()
   set(CUDNN_FRONTEND_INCLUDE_DIR ${CMAKE_CURRENT_LIST_DIR}/../third_party/cudnn_frontend/include)
-  target_include_directories(torch::cudnn INTERFACE ${CUDNN_FRONTEND_INCLUDE_DIR})
+  if(TARGET torch::cudnn)
+    target_include_directories(torch::cudnn INTERFACE ${CUDNN_FRONTEND_INCLUDE_DIR})
+  endif()
 endif()
 
 # ---[ nvtx
@@ -1189,9 +1207,18 @@ if(USE_DISTRIBUTED AND USE_TENSORPIPE)
   if(MSVC)
     message(WARNING "Tensorpipe cannot be used on Windows.")
   else()
+    # PPU: tensorpipe always uses CUDA support.
+    # - CUDA-compat (USE_CUDA=ON): original path, real CUDA SDK + nvcc
+    # - SAIL: PPU SDK (sailify-converted sources: hggc_runtime.h, hggcMalloc, etc.)
+    # USE_CUDA is ON in both CUDA-compat and SAIL modes (SAIL forces it ON at
+    # the top-level USE_SAIL derivation), so this single branch covers both;
+    # under SAIL the PPU SDK backs the CUDA API surface.
     if(USE_CUDA)
       set(TP_USE_CUDA ON CACHE BOOL "" FORCE)
       set(TP_ENABLE_CUDA_IPC ON CACHE BOOL "" FORCE)
+    else()
+      set(TP_USE_CUDA OFF CACHE BOOL "" FORCE)
+      set(TP_ENABLE_CUDA_IPC OFF CACHE BOOL "" FORCE)
     endif()
     set(TP_BUILD_LIBUV ON CACHE BOOL "" FORCE)
     add_compile_options(-DTORCH_USE_LIBUV)
@@ -1200,7 +1227,54 @@ if(USE_DISTRIBUTED AND USE_TENSORPIPE)
 
     # Tensorpipe uses cuda_add_library
     torch_update_find_cuda_flags()
+
+    # PPU SAIL: override find_package() to intercept CUDA calls.
+    # tensorpipe's find_package(CUDA REQUIRED) expects nvcc + libcudart.so
+    # which don't exist under the PPU SDK root. We intercept and provide
+    # PPU SDK paths (hggc_runtime.h, libhggcrt, libhggc).
+    # Non-CUDA calls pass through to the built-in _find_package.
+    # Guard variable controls interception — turned off after tensorpipe.
+    # IMPORTANT: macro is defined ONCE; re-defining would make _find_package
+    # point to this macro itself, causing infinite recursion.
+    if(USE_SAIL)
+      set(_PPU_INTERCEPT_CUDA ON)
+      macro(find_package _fp_pkg)
+        if(_PPU_INTERCEPT_CUDA AND "${_fp_pkg}" STREQUAL "CUDA")
+          message(STATUS "PPU SAIL: intercepting find_package(CUDA) → PPU SDK")
+          set(CUDA_TOOLKIT_ROOT_DIR "${PPU_TOOLKIT_ROOT_DIR}")
+          set(CUDA_INCLUDE_DIRS "${PPU_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/include")
+          set(CUDA_VERSION "${CUDA_VERSION}")
+          if(NOT CUDA_NVCC_EXECUTABLE)
+            set(CUDA_NVCC_EXECUTABLE "${CMAKE_HG_COMPILER}")
+          endif()
+          find_library(CUDA_CUDART_LIBRARY
+            NAMES hggcrt1
+            PATHS "${PPU_TOOLKIT_ROOT_DIR}/lib"
+                  "${PPU_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/lib"
+            NO_DEFAULT_PATH)
+          find_library(_fp_hggc_lib NAMES hggc
+            PATHS "${PPU_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/lib"
+            NO_DEFAULT_PATH)
+          set(CUDA_LIBRARIES "${CUDA_CUDART_LIBRARY}")
+          if(_fp_hggc_lib)
+            list(APPEND CUDA_LIBRARIES "${_fp_hggc_lib}")
+          endif()
+          set(CUDA_FOUND TRUE)
+          message(STATUS "  CUDA_INCLUDE_DIRS    = ${CUDA_INCLUDE_DIRS}")
+          message(STATUS "  CUDA_CUDART_LIBRARY  = ${CUDA_CUDART_LIBRARY}")
+          message(STATUS "  CUDA_LIBRARIES       = ${CUDA_LIBRARIES}")
+        else()
+          cmake_language(CALL _find_package "${_fp_pkg}" ${ARGN})
+        endif()
+      endmacro()
+    endif()
+
     add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/tensorpipe)
+
+    # Disable CUDA interception for subsequent find_package calls
+    if(USE_SAIL)
+      set(_PPU_INTERCEPT_CUDA OFF)
+    endif()
     # Suppress warning to unblock libnop compilation by clang-17
     # See https://github.com/pytorch/pytorch/issues/151316
     target_compile_options_if_supported(tensorpipe -Wno-missing-template-arg-list-after-template-kw)
@@ -1214,12 +1288,11 @@ if(USE_DISTRIBUTED AND USE_TENSORPIPE)
     list(APPEND Caffe2_DEPENDENCY_LIBS tensorpipe)
     list(APPEND Caffe2_DEPENDENCY_LIBS nlohmann)
     list(APPEND Caffe2_DEPENDENCY_LIBS moodycamel)
+    # SAIL forces USE_CUDA ON, so USE_CUDA alone also covers the SAIL case.
     if(USE_CUDA)
       list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS tensorpipe_cuda)
     elseif(USE_ROCM)
-      message(WARNING "TensorPipe doesn't yet support ROCm")
-      # Not yet...
-      # list(APPEND Caffe2_HIP_DEPENDENCY_LIBS tensorpipe_hip)
+      message(WARNING "TensorPipe doesn't yet support ROCm cuda_ipc")
     endif()
   endif()
 endif()
@@ -1254,7 +1327,21 @@ if(USE_GLOO)
         get_target_property(_include_dirs uv_a INCLUDE_DIRECTORIES)
         set_target_properties(uv_a PROPERTIES INTERFACE_INCLUDE_DIRECTORIES "${_include_dirs}")
       endif()
-      set(GLOO_USE_CUDA_TOOLKIT ON CACHE BOOL "" FORCE)
+      # PPU SAIL: gloo builds its own PPU/HGGC device backend (gloo_hg).
+      # Only USE_CUDA has to be forced off: gloo's CUDA backend would need nvcc
+      # or enable_language(CUDA), which SAIL mode does not use. It is restored right
+      # after add_subdirectory below.
+      if(USE_SAIL)
+        set(USE_CUDA_SAVED ${USE_CUDA})
+        set(USE_CUDA OFF)
+        message(STATUS "PPU SAIL: building gloo with PPU/HGGC device support (gloo_hg)")
+      else()
+        # The fork also provides a PPU backend, but CUDA-compatible builds must
+        # keep using gloo_cuda and must not invoke sailify inside gloo.
+        set(USE_PPU_SAVED ${USE_PPU})
+        set(USE_PPU OFF)
+        set(GLOO_USE_CUDA_TOOLKIT ON CACHE BOOL "" FORCE)
+      endif()
 
       # Disable NCCL/RCCL since we don't use Gloo+NCCL, make sure to re-enable it!
       set(USE_NCCL_SAVED ${USE_NCCL})
@@ -1265,11 +1352,51 @@ if(USE_GLOO)
       set(USE_NCCL ${USE_NCCL_SAVED})
       set(USE_RCCL ${USE_RCCL_SAVED})
 
+      # PPU sail: restore USE_CUDA overridden for gloo above, then make gloo_hg
+      # position independent.
+      #
+      # gloo_hg is a static library that gets archived into libtorch_cuda.so, so
+      # its objects must be PIC. gloo's own CMakeLists only appends -fPIC to
+      # CMAKE_CXX_FLAGS, which does not reach HG (.cu) sources, so its .cc
+      # objects are PIC while its .cu objects are not and the link fails with
+      #   relocation R_X86_64_PC32 against symbol ... can not be used when
+      #   making a shared object; recompile with -fPIC
+      # POSITION_INDEPENDENT_CODE is a target property read at generate time, so
+      # setting it here (after add_subdirectory) is equivalent to setting it
+      # inside gloo, and makes CMake apply CMAKE_HG_COMPILE_OPTIONS_PIC
+      # (-Xcompiler=-fPIC) to the HG objects as well. This mirrors what this file
+      # already does for pthreadpool, cpuinfo, pytorch_qnnpack and kineto.
+      # This belongs upstream in gloo; drop it once it lands there.
+      if(USE_SAIL)
+        set(USE_CUDA ${USE_CUDA_SAVED})
+        if(TARGET gloo_hg)
+          set_property(TARGET gloo_hg PROPERTY POSITION_INDEPENDENT_CODE ON)
+        endif()
+      else()
+        set(USE_PPU ${USE_PPU_SAVED})
+      endif()
+
       # Here is a little bit hacky. We have to put PROJECT_BINARY_DIR in front
       # of PROJECT_SOURCE_DIR with/without conda system. The reason is that
       # gloo generates a new config.h in the binary directory.
       include_directories(BEFORE SYSTEM ${CMAKE_CURRENT_LIST_DIR}/../third_party/gloo)
       include_directories(BEFORE SYSTEM ${PROJECT_BINARY_DIR}/third_party/gloo)
+
+      # PPU sail: gloo's device headers exist twice - the pristine CUDA ones in
+      # third_party/gloo/gloo/, and the sailify-converted ones under
+      # <gloo binary dir>/sailify/gloo/ (where gloo's Sailify.cmake rewrites
+      # GLOO_USE_CUDA to GLOO_USE_PPU, matching the generated config.h).
+      # gloo's own cmake/Sailify.cmake PREPENDs that directory, but only within
+      # gloo's directory scope. torch-side translation units such as
+      # ProcessGroupGlooCuda.cpp are compiled in the caffe2/ scope and would
+      # otherwise pick up the pristine headers and trip
+      #   gloo/cuda.h: #error "Expected GLOO_USE_CUDA to be defined"
+      # Prepend it here (i.e. AFTER the two calls above, so it ends up in front)
+      # so both scopes agree on which gloo device headers to use.
+      if(USE_SAIL)
+        include_directories(BEFORE SYSTEM
+          ${PROJECT_BINARY_DIR}/third_party/gloo/sailify)
+      endif()
     else()
       find_package(Gloo)
       if(NOT Gloo_FOUND)
@@ -1313,7 +1440,9 @@ if(USE_GLOO)
 
       add_library(gloo SHARED IMPORTED)
       set_target_properties(gloo PROPERTIES IMPORTED_LOCATION ${Gloo_NATIVE_LIBRARY})
-      if(USE_CUDA)
+      # PPU sail uses gloo_hg (built from source); the imported gloo_cuda below
+      # only applies to a system gloo built against a real CUDA toolkit.
+      if(USE_CUDA AND NOT USE_SAIL)
         add_library(gloo_cuda SHARED IMPORTED)
         set_target_properties(gloo_cuda PROPERTIES IMPORTED_LOCATION ${Gloo_CUDA_LIBRARY})
       elseif(USE_ROCM)
@@ -1329,12 +1458,16 @@ if(USE_GLOO)
     # Add explicit dependency since NCCL is built from third_party.
     # Without dependency, make -jN with N>1 can fail if the NCCL build
     # hasn't finished when CUDA targets are linked.
-    if(NOT USE_SYSTEM_NCCL AND USE_NCCL AND NOT USE_ROCM)
+    # (Under SAIL there is no gloo_cuda target and no nccl_external.)
+    if(NOT USE_SYSTEM_NCCL AND USE_NCCL AND NOT USE_ROCM AND NOT USE_SAIL)
       add_dependencies(gloo_cuda nccl_external)
     endif()
-    # Pick the right dependency depending on USE_CUDA
+    # Pick the right dependency depending on the backend
     list(APPEND Caffe2_DEPENDENCY_LIBS gloo)
-    if(USE_CUDA)
+    if(USE_SAIL)
+      # gloo_hg carries gloo's PPU device collectives (HGGC::toolkit linked in).
+      list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS gloo_hg)
+    elseif(USE_CUDA)
       list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS gloo_cuda)
     elseif(USE_ROCM)
       list(APPEND Caffe2_HIP_DEPENDENCY_LIBS gloo_hip)
@@ -1674,7 +1807,12 @@ if(USE_KINETO AND INTERN_BUILD_MOBILE AND USE_LITE_INTERPRETER_PROFILER AND (USE
 endif()
 
 if(USE_KINETO)
-  if(USE_CUDA)
+  if(USE_SAIL)
+    # Kineto has no native PPU backend. Reusing its CUDA backend would invoke
+    # FindCUDAToolkit and require nvcc/CUPTI, which are absent in a SAIL build.
+    set(KINETO_BACKEND "cpu" CACHE STRING "" FORCE)
+    message(STATUS "Using CPU-only version of Kineto for PPU SAIL")
+  elseif(USE_CUDA)
     set(KINETO_BACKEND "cuda" CACHE STRING "" FORCE)
     message(STATUS "Using Kineto with CUPTI support")
   elseif(USE_ROCM)
@@ -1705,9 +1843,23 @@ if(USE_KINETO)
     endif()
   endif()
 
+  # CUDA-compatible PPU builds expose a CUDA toolkit layout to Kineto.
+  if(USE_PPU AND NOT USE_SAIL)
+    set(CUDAToolkit_ROOT_SAVED "${CUDAToolkit_ROOT}")
+    if(DEFINED PPU_TOOLKIT_ROOT_DIR AND EXISTS "${PPU_TOOLKIT_ROOT_DIR}/CUDA_SDK")
+      set(CUDAToolkit_ROOT "${PPU_TOOLKIT_ROOT_DIR}/CUDA_SDK")
+      message(STATUS "PPU CUDA-compat: CUDAToolkit_ROOT → ${PPU_TOOLKIT_ROOT_DIR}/CUDA_SDK")
+    endif()
+  endif()
+
   if(NOT TARGET kineto)
     add_subdirectory("${KINETO_SOURCE_DIR}")
     set_property(TARGET kineto PROPERTY POSITION_INDEPENDENT_CODE ON)
+  endif()
+
+  # Restore the toolkit hint after configuring CUDA-compatible Kineto.
+  if(USE_PPU AND NOT USE_SAIL)
+    set(CUDAToolkit_ROOT "${CUDAToolkit_ROOT_SAVED}")
   endif()
   list(APPEND Caffe2_DEPENDENCY_LIBS kineto)
   string(APPEND CMAKE_CXX_FLAGS " -DUSE_KINETO")

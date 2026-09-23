@@ -52,7 +52,7 @@ if(EXISTS "${_cutedsl_src}")
     DESTINATION "${_cutedsl_dest}"
     RENAME "__init__.py"
   )
-elseif(USE_CUDA)
+elseif(USE_CUDA AND NOT USE_PPU)
   message(FATAL_ERROR
     "CuTeDSL source not found at ${_cutedsl_src}.\n"
     "The cutlass submodule may be missing. Please run:\n"
