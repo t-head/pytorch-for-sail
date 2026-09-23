@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # ---[ Generate and install header and cpp files
 include(../cmake/Codegen.cmake)
 
@@ -548,6 +549,22 @@ if(USE_CUDA OR USE_ROCM)
   append_filelist("libtorch_cuda_core_sources" Caffe2_GPU_HIP_JIT_FUSERS_SRCS)
 endif()
 
+if(USE_PPU)
+  set(PPU_OPTION "-O3 -std=c++17 -U__CUDA_NO_HALF_OPERATORS__ -U__CUDA_NO_HALF_CONVERSIONS__ -U__CUDA_NO_HALF2_OPERATORS__ -U__CUDA_NO_BFLOAT16_CONVERSIONS__ -mllvm -ppu-max-vreg-count=255 -mllvm -ppu-sink-matrix-addr=true -mllvm -ppu-max-alloca-byte-size=320 -mllvm -ppu-sink-async-addr=true -mllvm -ppu-sink-load-addr=true -mllvm -ppu-sink-store-addr=true -mllvm -ppu-alloca-half-ldst-simplify=true --expt-relaxed-constexpr --expt-extended-lambda --use_fast_math -DUSE_PPU -DUSE_AIU")
+  if(USE_FLASH_ATTENTION)
+    set(PPU_FLASH_ATTENTION_CU_DIR "third_party/flash-attention/csrc/flash_attn/src")
+    # flash_attention sources
+    file(GLOB PPU_FA_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*.cu)
+    # disable hdim224 compilation
+    file(GLOB PPU_HDIM224_KERNELS ${PROJECT_SOURCE_DIR}/${PPU_FLASH_ATTENTION_CU_DIR}/*hdim224*.cu)
+    list(REMOVE_ITEM PPU_FA_KERNELS ${PPU_HDIM224_KERNELS})
+    set_source_files_properties(${PPU_FA_KERNELS} PROPERTIES COMPILE_FLAGS ${PPU_OPTION})
+  endif()
+  if(USE_MEM_EFF_ATTENTION)
+    set_source_files_properties(${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES} PROPERTIES COMPILE_FLAGS "--use_fast_math")
+    message(STATUS "PPU_MEM_EFF_ATTENTION_CUDA_SOURCES: ${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES}")
+  endif()
+endif()
 
 if(USE_CUDA)
   list(APPEND Caffe2_GPU_CU_SRCS ${Caffe2_GPU_HIP_JIT_FUSERS_SRCS})
@@ -570,6 +587,13 @@ if(USE_CUDA)
     append_filelist("libtorch_cuda_distributed_base_sources" Caffe2_GPU_SRCS)
     if(NOT WIN32)
       append_filelist("libtorch_cuda_distributed_extra_sources" Caffe2_GPU_SRCS)
+      # PPU sail keeps the device-side distributed glue in this list:
+      # ProcessGroupGlooCuda.cpp registers the at::kCUDA creator of
+      # GlooAllreduceRegistry (without it ProcessGroupGloo::allreduce() on device
+      # tensors dereferences a null work object in enqueue()), and
+      # tensorpipe_cuda.cpp registers the RPC CUDA channels plus the CUDA
+      # device-type converter against the libtensorpipe_cuda that is already built
+      # here (TP_USE_CUDA is ON under sail).
       set_source_files_properties(
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/ProcessGroupNCCL.cpp
         ${TORCH_SRC_DIR}/csrc/distributed/c10d/cuda/utils.cpp
@@ -1007,7 +1031,7 @@ elseif(USE_CUDA)
 
   # Compile with NVSHMEM
   # Default value of `USE_NVSHMEM` is set in CMakeLists.txt under root, to ON.
-  if(USE_NVSHMEM)
+  if(USE_NVSHMEM AND NOT USE_SAIL)
     message(STATUS "NVSHMEM_HOME set to:  '$ENV{NVSHMEM_HOME}'")
     message(STATUS "NVSHMEM wheel installed at:  '${NVSHMEM_PY_DIR}'")
     # Search order:
@@ -1039,7 +1063,7 @@ elseif(USE_CUDA)
   endif()
 
   # If NVSHMEM_LIBRARY is found, we build torch_cuda with NVSHMEM support.
-  if(NVSHMEM_HOST_LIB AND NVSHMEM_DEVICE_LIB AND NVSHMEM_INCLUDE_DIR)
+  if(NVSHMEM_HOST_LIB AND NVSHMEM_DEVICE_LIB AND NVSHMEM_INCLUDE_DIR AND NOT USE_SAIL)
     message(STATUS "NVSHMEM found, building with NVSHMEM support")
     include_directories(${NVSHMEM_INCLUDE_DIR})
 
@@ -1069,6 +1093,10 @@ elseif(USE_CUDA)
   else()
     message(STATUS "NVSHMEM not found, not building with NVSHMEM support.")
   endif()
+  if(USE_NVSHMEM AND USE_SAIL)
+    message(STATUS "SAIL mode: NVSHMEM has no PPU native equivalent; disabling torch_nvshmem.")
+    set(USE_NVSHMEM OFF)
+  endif()
 
   if(USE_UCC)
     target_link_libraries(torch_cuda PRIVATE __caffe2_ucc)
@@ -1082,14 +1110,20 @@ elseif(USE_CUDA)
         FLASH_NAMESPACE=pytorch_flash
         UNFUSE_FMA                      # Addressing issue #121558
       )
-    target_sources(torch_cuda PRIVATE $<TARGET_OBJECTS:flash_attention>)
-    target_include_directories(torch_cuda SYSTEM PUBLIC
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/include>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cutlass/include>
-      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src>
-      $<INSTALL_INTERFACE:include>
-    )
+    if(USE_PPU)
+      target_include_directories(torch_cuda PRIVATE
+          ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/
+      )
+    else()
+      target_sources(torch_cuda PRIVATE $<TARGET_OBJECTS:flash_attention>)
+      target_include_directories(torch_cuda SYSTEM PUBLIC
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/cutlass/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src>
+        $<INSTALL_INTERFACE:include>
+      )
+    endif()
   endif()
   if(USE_MEM_EFF_ATTENTION)
     target_compile_definitions(torch_cuda PRIVATE USE_MEM_EFF_ATTENTION)
@@ -1112,11 +1146,11 @@ elseif(USE_CUDA)
         torch_cpu
         torch_cuda
     )
-    if($ENV{ATEN_STATIC_CUDA})
-    target_link_libraries(torch_cuda_linalg PRIVATE
-        CUDA::cusolver_static
-        ${CUDAToolkit_LIBRARY_DIR}/libcusolver_lapack_static.a     # needed for libcusolver_static
-    )
+    if("$ENV{ATEN_STATIC_CUDA}" AND NOT USE_SAIL)
+      target_link_libraries(torch_cuda_linalg PRIVATE
+          CUDA::cusolver_static
+          ${CUDAToolkit_LIBRARY_DIR}/libcusolver_lapack_static.a     # needed for libcusolver_static
+      )
     else()
       target_link_libraries(torch_cuda_linalg PRIVATE
           CUDA::cusolver
