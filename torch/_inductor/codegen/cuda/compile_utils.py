@@ -18,6 +18,14 @@ log = logging.getLogger(__name__)
 autotuning_log = torch._logging.getArtifactLogger(__name__, "autotuning")
 
 
+def _ppu_arch_from_cuda_arch(arch: str) -> str:
+    from torch.utils.cpp_extension import _cuda_arch_to_ppu
+
+    if "." not in arch and len(arch) >= 2:
+        arch = f"{arch[:-1]}.{arch[-1]}"
+    return _cuda_arch_to_ppu(arch)
+
+
 def use_re_build() -> bool:
     """
     Use for CUTLASS compilation only right now.
@@ -65,15 +73,28 @@ def _clone_cutlass_paths(build_root: str) -> list[str]:
 def _cutlass_include_paths() -> list[str]:
     cutlass_root = _cutlass_path()
     if cutlass_root is None:
-        return []
-    return [
-        # Use realpath to get canonical absolute paths, in order not to mess up cache keys
-        os.path.realpath(os.path.join(cutlass_root, path))
-        for path in _cutlass_paths()
-    ]
+        paths = []
+    else:
+        paths = [
+            # Use realpath to get canonical absolute paths, in order not to mess up cache keys
+            os.path.realpath(os.path.join(cutlass_root, path))
+            for path in _cutlass_paths()
+        ]
+    if torch.version.sail is not None:
+        from torch.utils import cpp_extension
+
+        paths.append(os.path.realpath(cpp_extension._join_ppu_home("include")))
+        compat_dir = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+        if os.path.isdir(compat_dir):
+            paths.append(compat_dir)
+    return paths
 
 
 def _cuda_compiler() -> str | None:
+    if torch.version.sail is not None:
+        from torch.utils import cpp_extension
+
+        return cpp_extension._join_ppu_home("bin", "hgcc")
     if cuda_env.nvcc_exist(config.cuda.cuda_cxx):
         return config.cuda.cuda_cxx
     if config.is_fbcode():
@@ -99,6 +120,13 @@ def _cuda_lib_options() -> list[str]:
             os.path.join(build_paths.sdk_lib, "stubs"),
         ]
     extra_ldflags: list[str] = []
+    if torch.version.sail is not None:
+        from torch.utils import cpp_extension
+
+        for path in cpp_extension.library_paths(device_type="cuda"):
+            extra_ldflags.extend([f"-L{path}", "-Xlinker", f"-rpath={path}"])
+        extra_ldflags.extend(["-lhggc", "-lhggcrt1"])
+        return extra_ldflags
     if is_linux():
         _transform_cuda_paths(lpaths)
         for path in lpaths:
@@ -151,6 +179,18 @@ def _nvcc_arch_as_compile_option() -> str:
 
 def _nvcc_compiler_options() -> list[str]:
     arch = _nvcc_arch_as_compile_option()
+    if torch.version.sail is not None:
+        from torch.utils.cpp_extension import _sailify_nvcc_flags
+
+        return _sailify_nvcc_flags(
+            [
+                "-O3",
+                "-std=c++20",
+                "--expt-relaxed-constexpr",
+                "-DNDEBUG",
+                f"--gpu-architecture={_ppu_arch_from_cuda_arch(arch)}",
+            ]
+        )
     code = [f"sm_{arch}", f"compute_{arch}"]
     if config.cuda.enable_cuda_lto:
         code += [f"lto_{arch}"]
