@@ -1762,34 +1762,26 @@ def apply_cutlass_sail_patch(patch_file: str, target_root: str) -> None:
     apply_patch(patch_file, target_root)
 
 
-def apply_fa_patches_with_markers(
-    namespace_patch: str, num_splits_patch: str, fa_root: str
-) -> None:
-    """Apply the flash-attention patches idempotently.
-
-    Long-lived checkouts carry these patches in the source tree, and an
-    out-of-place sailify copy inherits them. Re-applying then makes
-    ``patch`` detect the changes and reverse them (``Assuming -R``),
-    which deletes namespace_config.h and strips the num_splits guard.
-    Detect the applied state by content markers and skip instead.
-    """
-    namespace_header = Path(
-        fa_root, "csrc", "flash_attn", "src", "namespace_config.h"
-    )
+def apply_fa_namespace_patch(namespace_patch: str, fa_root: str) -> None:
+    """Install the namespace header required by PyTorch's FlashAttention wrapper."""
+    namespace_header = Path(fa_root, "csrc", "flash_attn", "src", "namespace_config.h")
     if namespace_header.is_file() and "FLASH_NAMESPACE_CONFIG_H" in namespace_header.read_text(
         encoding="utf-8", errors="replace"
     ):
-        print("flash-attention namespace patch already applied, skipping.")
-    else:
-        apply_patch(namespace_patch, fa_root)
+        print("flash-attention namespace header already applied, skipping.")
+        return
+    apply_patch(namespace_patch, fa_root)
 
+
+def apply_fa_num_splits_patch(num_splits_patch: str, fa_root: str) -> None:
+    """Apply the supported FlashAttention num_splits guard idempotently."""
     flash_api = Path(fa_root, "csrc", "flash_attn", "flash_api.cpp")
     if flash_api.is_file() and "num_splits is not supported on PPU" in flash_api.read_text(
         encoding="utf-8", errors="replace"
     ):
         print("flash-attention num_splits guard already applied, skipping.")
-    else:
-        apply_patch(num_splits_patch, fa_root)
+        return
+    apply_patch(num_splits_patch, fa_root)
 
 
 def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
@@ -2354,13 +2346,14 @@ def main() -> None:
             if not os.path.exists(fa_root):
                 raise _missing_submodule_error(torch_root, "third_party/flash-attention")
 
-            fa_patch_file = os.path.join(
+            fa_namespace_patch = os.path.join(
                 patch_root, "flash_attention_namespace_config.patch"
             )
             fa_num_splits_patch = os.path.join(
                 patch_root, "flash_attention_num_splits_guard.patch"
             )
-            apply_fa_patches_with_markers(fa_patch_file, fa_num_splits_patch, fa_root)
+            apply_fa_namespace_patch(fa_namespace_patch, fa_root)
+            apply_fa_num_splits_patch(fa_num_splits_patch, fa_root)
 
         # SAIL-only branch: the cudafy (CUDA-compatible) patch path is disabled.
         # else:
