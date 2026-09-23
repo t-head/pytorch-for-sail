@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #ifdef USE_C10D_GLOO
 #include <torch/csrc/distributed/c10d/ProcessGroupGloo.hpp>
 #include <torch/csrc/distributed/c10d/ProcessGroupGlooDetail.hpp>
@@ -195,13 +196,16 @@ static c10::intrusive_ptr<ProcessGroupGloo::AsyncWork> makeAllreduceCUDAWork(
   auto layout = inputs[0].layout();
 
   if (layout == c10::kStrided) {
+    // Device-to-device collectives require a transport that reports
+    // hasGPUDirect() -- only ibverbs does. SAIL runs gloo over TCP, so this
+    // falls through to the host-staging path below until a GDR-capable
+    // transport is wired up.
     if (context->getDevice()->hasGPUDirect()) {
       return c10::make_intrusive<AsyncAllreduceCUDADeviceWork>(
           std::move(context), inputs, reduceOp, tag, seq, timeout);
-    } else {
-      return c10::make_intrusive<AsyncAllreduceCUDAHostWork>(
-          std::move(context), inputs, reduceOp, tag, seq, timeout);
     }
+    return c10::make_intrusive<AsyncAllreduceCUDAHostWork>(
+        std::move(context), inputs, reduceOp, tag, seq, timeout);
   } else if (layout == c10::kSparse) {
     return c10::make_intrusive<AsyncSparseAllreduceCUDAWork>(
         std::move(context), inputs, tag, seq, timeout);

@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #define TORCH_ASSERT_NO_OPERATORS
 #include <c10/core/ScalarType.h>
 #include <c10/util/irange.h>

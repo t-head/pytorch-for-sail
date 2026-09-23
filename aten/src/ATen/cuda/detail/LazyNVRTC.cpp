@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #include <ATen/cuda/detail/LazyNVRTC.h>
 
 #include <ATen/cuda/nvrtc_stub/ATenNVRTC.h>
@@ -9,9 +10,12 @@
 namespace at::cuda::detail {
 namespace _stubs {
 
+
 at::DynamicLibrary& getCUDALibrary() {
 #if defined(_WIN32)
   static at::DynamicLibrary lib("nvcuda.dll");
+#elif defined(USE_SAIL)
+  static at::DynamicLibrary lib("libhggc.so");
 #else
   static at::DynamicLibrary lib("libcuda.so.1");
 #endif
@@ -62,13 +66,17 @@ static std::string getLibVersion() {
 static std::string getLibName() {
 #if defined(_WIN32)
   return std::string("nvrtc64_") + getLibVersion() + "_0.dll";
+#elif defined(USE_SAIL)
+  return std::string("libhgrtc.so");
 #else
   return std::string("libnvrtc.so.") + getLibVersion();
 #endif
 }
 
 static std::string getAltLibName() {
-#if !defined(_WIN32) && defined(NVRTC_SHORTHASH)
+#if !defined(_WIN32) && defined(USE_SAIL)
+  return {};
+#elif !defined(_WIN32) && defined(NVRTC_SHORTHASH)
   return std::string("libnvrtc-") + C10_STRINGIZE(NVRTC_SHORTHASH) + ".so." + getLibVersion();
 #else
   return {};
