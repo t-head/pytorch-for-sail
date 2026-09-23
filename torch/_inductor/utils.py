@@ -63,7 +63,6 @@ from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_flatten, tree_map_only
 from torch.utils._triton import has_triton_package
 
-
 OPTIMUS_EXCLUDE_POST_GRAD = [
     "activation_quantization_aten_pass",
     "inductor_autotune_lookup_table",
@@ -1948,6 +1947,11 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
         return True
 
     min_sms = 16 if device.type == "xpu" else 68  # 3080
+    if torch.version.sail is not None and torch.cuda.is_available():
+        compute_cap = torch.cuda.get_device_capability()
+        # 810E，sm80
+        if compute_cap == (8, 0):
+            min_sms = 64
     avail_sms = prop.multi_processor_count
     if avail_sms < min_sms:
         log.warning(

@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /***************************************************************************************************
  * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause
@@ -38,6 +39,12 @@
 
 namespace cutlass {
 namespace arch {
+
+#if defined(USE_PPU) || defined(USE_SAIL)
+// PPU CUTLASS exposes PPU0010, while these ATen CUTLASS extensions dispatch
+// the Ampere mixed-GEMM path through the CUDA-compatible Sm80 tag.
+using Sm80 = PPU0010;
+#endif
 
 // Tag which triggers MMA which will trigger
 struct OpMultiplyAddDequantizeInterleavedBToA;

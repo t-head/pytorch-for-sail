@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /***************************************************************************************************
  * Copyright (c) 2017 - 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: BSD-3-Clause
@@ -43,9 +44,15 @@
 #include <cutlass/numeric_conversion.h>
 #include <cutlass/numeric_types.h>
 
+#if defined(USE_PPU) || defined(USE_SAIL)
+// PPU CUTLASS provides PPU0010 MMA and memory helpers instead of CUDA SM75/SM80 headers.
+#include <cutlass/arch/memory_ppu.h>
+#include <cutlass/arch/mma_ppu0010.h>
+#else
 #include <cutlass/arch/memory_sm75.h>
 #include <cutlass/arch/mma_sm75.h>
 #include <cutlass/arch/mma_sm80.h>
+#endif
 
 #include <cutlass/gemm/gemm.h>
 #include <cutlass/gemm/warp/mma.h>
@@ -53,7 +60,12 @@
 #include <cutlass/gemm/warp/mma_tensor_op_policy.h>
 
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator.h>
+// PPU: sm80 tile iterator 映射到 ppu0010
+#if defined(USE_PPU)
+#include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_ppu0010.h>
+#else
 #include <cutlass/gemm/warp/mma_tensor_op_tile_iterator_sm80.h>
+#endif
 
 /////////////////////////////////////////////////////////////////////////////////////////////////
 

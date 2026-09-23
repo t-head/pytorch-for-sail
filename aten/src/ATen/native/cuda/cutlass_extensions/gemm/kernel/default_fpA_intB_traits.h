@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 #pragma once
 
 #include <cutlass/arch/arch.h>
@@ -34,6 +35,10 @@ struct MixedGemmArchTraits<float, float, arch> {
     using Operator = cutlass::arch::OpMultiplyAdd;
 };
 
+#if !defined(USE_PPU)
+// PPU: arch/arch.h aliases Sm70/Sm75/Sm80 -> PPU0010, so these pre-Sm80
+// specializations collapse onto the Ampere one and trigger redefinition.
+// Keep only the Sm80(=PPU0010) specialization under USE_PPU.
 // ========================= Volta Traits ===========================
 // Volta will always dequantize after the global memory load.
 // This will instantiate any HMMA tensorcore kernels for Volta.
@@ -91,6 +96,7 @@ public:
 
     using Operator = typename LayoutDetails::Operator;
 };
+#endif  // !USE_PPU
 
 // ======================= Ampere Traits ==============================
 template<typename TypeA, typename TypeB>
