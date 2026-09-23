@@ -2,6 +2,7 @@
 
 import functools
 import logging
+import unittest
 
 import torch
 from torch._inductor import utils
@@ -88,6 +89,10 @@ class TestBench(TestCase):
         log.warning("do_bench result: %s", res)
         self.assertGreater(res, 0)
 
+    @unittest.skipIf(
+        torch.version.sail is not None,
+        "PPU does not expose device events for profiling benchmarks",
+    )
     def test_do_bench_using_profiling(self):
         res = do_bench_using_profiling(self._bench_fn)
         log.warning("do_bench_using_profiling result: %s", res)
