@@ -1344,6 +1344,14 @@ def _get_torch_related_args(
         )
         libraries_dirs.append(config.aot_inductor.aoti_shim_library_path)
 
+    if torch.version.sail is not None:
+        from torch.utils.cpp_extension import PPU_HOME
+
+        # AOT wrappers embed HG fatbins whose runtime symbols are not visible
+        # to the host linker. Keep the PPU runtime as an explicit dependency.
+        libraries_dirs.append(os.path.join(PPU_HOME, "lib"))
+        libraries.extend(["hggc", "hggcrt1"])
+
     if _IS_WINDOWS:
         libraries.append("sleef")
 
@@ -2049,10 +2057,16 @@ def get_cpp_torch_device_options(
             definitions.append(" __HIP_PLATFORM_AMD__")
             _transform_rocm_paths(libraries_dirs)
         else:
-            if config.is_fbcode() or not link_libtorch:
-                libraries += ["cuda"]
-            else:
-                libraries += ["cuda", "torch_cuda"]
+            # SAIL exposes CUDA-compatible APIs through the PPU runtime, but
+            # does not provide the CUDA driver library. Keep torch_cuda when
+            # linking libtorch and omit the unavailable -lcuda dependency.
+            if torch.version.sail is None:
+                if config.is_fbcode() or not link_libtorch:
+                    libraries += ["cuda"]
+                else:
+                    libraries += ["cuda", "torch_cuda"]
+            elif link_libtorch:
+                libraries += ["torch_cuda"]
             if config.aot_inductor.cross_target_platform == "windows":
                 extra_libs = _ensure_mingw_cudart_import_lib(libraries_dirs)
                 libraries += ["cudart"] + extra_libs
@@ -2670,6 +2684,10 @@ class CppBuilder:
                         __HGGC_NO_HALF_OPERATORS__ __HGGC_NO_HALF_CONVERSIONS__
                         __HGGC_NO_BFLOAT16_CONVERSIONS__ __HGGC_NO_HALF2_OPERATORS__)
                     target_link_directories({self._target_name} PRIVATE "{ppu_lib}")
+                    # Generated AOT wrappers reference HG runtime APIs through
+                    # embedded kernels. Preserve the SDK runtime DT_NEEDED entry
+                    # even when the host linker cannot see those references.
+                    target_link_options({self._target_name} PRIVATE -Wl,--no-as-needed)
                     target_link_libraries({self._target_name} PRIVATE hggc hggcrt1)
 
                     find_program(OBJCOPY_EXECUTABLE objcopy)
