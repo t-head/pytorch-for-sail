@@ -195,10 +195,13 @@
 #   MIOPEN_LIBRARY
 #     specify where MIOpen is installed
 #
-#   NCCL_ROOT
+#   PCCL_LIB_DIR
+#   PCCL_INCLUDE_DIR
+#     specify where PCCL is installed for SAIL builds
+#
 #   NCCL_LIB_DIR
 #   NCCL_INCLUDE_DIR
-#     specify where nccl is installed
+#     specify where NCCL is installed for CUDA-compat builds
 #
 #   ACL_ROOT_DIR
 #     specify where Compute Library is installed
@@ -1778,42 +1781,49 @@ def check_path_exists(path: str) -> None:
 
 
 def Init_ppu_build_env() -> None:
-    # NCCL/PCCL path selection — controlled by USE_SAIL:
-    #   USE_SAIL=1 (sail mode)
-    #     → use PPU native PCCL path: /usr/local/PPU_SDK/targets/x86_64-linux/{include,lib}
-    #       (pccl.h + libpccl.so; FindNCCL.cmake maps NCCL variables to PCCL)
-    #   USE_SAIL unset/0/other (CUDA-compat mode, default)
-    #     → /usr/local/PPU_SDK/CUDA_SDK/{include,lib64}
-    #       (CUDA-style layout with nccl.h + libnccl.so)
-    # User env vars (NCCL_INCLUDE_DIR / NCCL_LIB_DIR) always take precedence:
-    # the `os.getenv("NCCL_INCLUDE_DIR") is None` guards below skip assignment
-    # when user has already exported them.
     use_sail = os.environ.get("USE_SAIL", "0") in ("1", "TRUE", "true", "ON", "on")
+
+    # SAIL uses native PCCL. Allow callers to override its locations, but use
+    # the SDK's include/lib entry points when they are not explicitly configured.
+    # CUDA-compat mode continues to require externally supplied NCCL paths.
     if use_sail:
-        ppu_nccl_path = "/usr/local/PPU_SDK/targets/x86_64-linux/include"
-        ppu_nccl_lib  = "/usr/local/PPU_SDK/targets/x86_64-linux/lib"
+        include_var = "PCCL_INCLUDE_DIR"
+        lib_var = "PCCL_LIB_DIR"
+        library_name = "PCCL"
+        ppu_sdk = os.environ.get("PPU_SDK", "/usr/local/PPU_SDK")
+        ppu_comm_include = os.environ.get(include_var) or os.path.join(
+            ppu_sdk, "include"
+        )
+        ppu_comm_lib = os.environ.get(lib_var) or os.path.join(ppu_sdk, "lib")
+        os.environ[include_var] = ppu_comm_include
+        os.environ[lib_var] = ppu_comm_lib
+    else:
+        include_var = "NCCL_INCLUDE_DIR"
+        lib_var = "NCCL_LIB_DIR"
+        library_name = "NCCL"
+        ppu_comm_include = os.getenv(include_var)
+        ppu_comm_lib = os.getenv(lib_var)
+    missing_comm_vars = [
+        name
+        for name, value in ((include_var, ppu_comm_include), (lib_var, ppu_comm_lib))
+        if not value
+    ]
+    if missing_comm_vars:
+        raise RuntimeError(
+            f"{library_name} paths must be configured before building. Set "
+            + ", ".join(missing_comm_vars)
+            + "."
+        )
+
+    check_path_exists(ppu_comm_include)
+    check_path_exists(ppu_comm_lib)
+    # FindNCCL.cmake retains upstream NCCL_* variables in both modes.
+    os.environ["NCCL_INCLUDE_DIR"] = ppu_comm_include
+    os.environ["NCCL_LIB_DIR"] = ppu_comm_lib
+    print(f"Using {include_var}: {ppu_comm_include}")
+    print(f"Using {lib_var}: {ppu_comm_lib}")
+    if use_sail:
         print("PPU build mode: SAIL (USE_SAIL=1), NCCL mapped to PCCL")
-    else:
-        ppu_nccl_path = "/usr/local/PPU_SDK/CUDA_SDK/include"
-        ppu_nccl_lib  = "/usr/local/PPU_SDK/CUDA_SDK/lib64"
-
-    # check PPU_SDK path
-    check_path_exists(ppu_nccl_path)
-    check_path_exists(ppu_nccl_lib)
-
-    # specify where nccl include is installed
-    if os.getenv("NCCL_INCLUDE_DIR") is None:
-        os.environ["NCCL_INCLUDE_DIR"] = ppu_nccl_path
-        print(f"Set NCCL_INCLUDE_DIR to: {ppu_nccl_path}")
-    else:
-        print(f"Using existing NCCL_INCLUDE_DIR: {os.getenv('NCCL_INCLUDE_DIR')}")
- 
-    # specify where nccl lib is installed
-    if os.getenv("NCCL_LIB_DIR") is None:
-        os.environ["NCCL_LIB_DIR"] = ppu_nccl_lib
-        print(f"Set NCCL_LIB_DIR to: {ppu_nccl_lib}")
-    else:
-        print(f"Using existing NCCL_LIB_DIR: {os.getenv('NCCL_LIB_DIR')}")
 
     # enable building flash attention for scaled dot product attention
     if os.getenv("USE_FLASH_ATTENTION") is None:
@@ -2133,7 +2143,7 @@ def main() -> None:
 
     # NOTE: PPU env init is already performed at module level (right before
     # setup() call) so that cmake spawned by setuptools ext_modules build
-    # hook can read NCCL_INCLUDE_DIR / NCCL_LIB_DIR. Do not re-init here.
+    # hook can receive validated PCCL or NCCL locations. Do not re-init here.
 
     on_ppu = os.environ.get("PPU_SDK")
     use_fa = os.environ.get("USE_FLASH_ATTENTION")
@@ -2332,8 +2342,8 @@ def main() -> None:
 
     # ── PPU env init BEFORE setup() triggers cmake subprocess ──
     # setup() below (line ~1968) spawns cmake via setuptools' ext_modules
-    # build hook; cmake's FindNCCL.cmake reads NCCL_INCLUDE_DIR / NCCL_LIB_DIR
-    # at configure time. If we defer env init to main() (which runs after
+    # build hook; cmake's FindNCCL.cmake receives the selected PCCL or NCCL
+    # locations through its internal NCCL-compatible variables at configure time. If we defer env init to main() (which runs after
     # setup() due to `if __name__ == "__main__"` being at the very bottom),
     # cmake has already failed with "Could NOT find NCCL".
     # Do module-level init here, gated by PPU_SDK (same guard as main()).

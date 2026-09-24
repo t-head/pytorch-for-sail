@@ -77,6 +77,20 @@ python3 -m pip install wheel
 
 Build the T-Head SAIL wheel directly with `python3 setup.py bdist_wheel`. The primary switch for SAIL mode is `USE_SAIL=1`. Device code is compiled with `hgcc` and linked against native T-Head SAIL SDK libraries.
 
+#### Communication Library Paths
+
+Communication-library paths must be configured explicitly; `setup.py` does not provide hardcoded defaults. For SAIL builds, configure the native PCCL header and library directories before building:
+
+```bash
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+
+test -f "$PCCL_INCLUDE_DIR/pccl.h"
+test -f "$PCCL_LIB_DIR/libpccl.so"
+```
+
+For CUDA-compat builds (`USE_SAIL` unset or `0`), configure `NCCL_INCLUDE_DIR` and `NCCL_LIB_DIR` instead. The build maps the selected paths to its internal NCCL-compatible CMake variables.
+
 #### Option 1: In-place Conversion
 
 In-place conversion is the default mode and suits CI or disposable checkouts; without `SAILIFY_OUTPUT_DIR`, source conversion and wheel compilation complete in one invocation.
@@ -86,6 +100,8 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1
@@ -114,6 +130,8 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1
@@ -156,6 +174,7 @@ The `.sailify_done` marker in the converted tree prevents redundant conversion. 
 | `SAILIFY_IN_PLACE` | `1` | Explicitly selects in-place conversion (the default behavior); normally not needed; must not be set together with `SAILIFY_OUTPUT_DIR` |
 | `SAILIFY_FORCE` | `1` | Forces source regeneration; set only when needed |
 | `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | Zhenwu PPU target architecture list; see below |
+| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | Required native PCCL header and library directories for SAIL builds |
 | `MAX_JOBS` | `32` | Maximum parallel jobs; adjust for available memory |
 | `PYTORCH_VERSION` | `2.10.0` | Declares the wheel release version |
 | `PYTORCH_BUILD_VERSION` | `2.10.0` | Version used when building a release wheel; must be set together with `PYTORCH_BUILD_NUMBER` |

@@ -77,6 +77,20 @@ python3 -m pip install wheel
 
 使用 `python3 setup.py bdist_wheel` 直接构建 T-Head SAIL wheel。SAIL 模式的核心开关是 `USE_SAIL=1`。设备代码由 `hgcc` 编译，底层链接 T-Head SAIL SDK 原生库。
 
+#### 通信库路径配置
+
+通信库路径必须显式配置，`setup.py` 不提供硬编码默认值。SAIL 构建前，请配置原生 PCCL 的头文件和库目录：
+
+```bash
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+
+test -f "$PCCL_INCLUDE_DIR/pccl.h"
+test -f "$PCCL_LIB_DIR/libpccl.so"
+```
+
+CUDA-compat 构建（未设置 `USE_SAIL` 或值为 `0`）则应配置 `NCCL_INCLUDE_DIR` 与 `NCCL_LIB_DIR`。构建系统会将选定路径映射到内部 NCCL 兼容的 CMake 变量。
+
 #### 方式一：原地转换
 
 原地转换是默认转换方式，适用于 CI 或可丢弃的临时工作树；未设置 `SAILIFY_OUTPUT_DIR` 时，源码转换和 wheel 编译会在一次调用中完成。
@@ -86,6 +100,8 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1
@@ -113,6 +129,8 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1
@@ -154,6 +172,7 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 | `SAILIFY_IN_PLACE` | `1` | 显式声明原地转换（默认行为），通常无需设置；不得与 `SAILIFY_OUTPUT_DIR` 同时设置 |
 | `SAILIFY_FORCE` | `1` | 强制重新转换源码，仅在需要时设置 |
 | `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | 真武 PPU 目标架构列表，详见下文 |
+| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | SAIL 构建所需的原生 PCCL 头文件和库目录 |
 | `MAX_JOBS` | `32` | 最大并行任务数；根据可用内存调整 |
 | `PYTORCH_VERSION` | `2.10.0` | wheel 发布版本号声明 |
 | `PYTORCH_BUILD_VERSION` | `2.10.0` | 构建发布 wheel 时使用的版本号；须与 `PYTORCH_BUILD_NUMBER` 同时设置 |
