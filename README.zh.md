@@ -85,6 +85,18 @@ export MAX_JOBS=128
 
 ### SAIL 构建（推荐：源树外转换）
 
+#### 通信库路径
+
+SAIL 构建在 PCCL_INCLUDE_DIR、PCCL_LIB_DIR 未设置或为空时，默认使用 PPU_SDK/include、PPU_SDK/lib；显式配置会覆盖默认值。非 SAIL 的 CUDA-compatible 构建仍必须显式配置 NCCL_INCLUDE_DIR、NCCL_LIB_DIR。如需使用非默认 PCCL 安装，请在构建前配置其原生头文件和库目录：
+
+```bash
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+
+test -f "$PCCL_INCLUDE_DIR/pccl.h"
+test -f "$PCCL_LIB_DIR/libpccl.so"
+```
+
 源树外转换不会改写原始 Git 工作树。构建分为 Sailify 转换和 wheel 编译两个阶段。
 
 ```bash
@@ -93,6 +105,8 @@ source /usr/local/PPU_SDK/envsetup.sh
 export MAX_JOBS=128
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1

@@ -85,6 +85,18 @@ export MAX_JOBS=128
 
 ### SAIL Build (Recommended: Out-of-place Conversion)
 
+#### Communication Library Paths
+
+SAIL builds default PCCL_INCLUDE_DIR and PCCL_LIB_DIR to $PPU_SDK/include and $PPU_SDK/lib when unset or empty; explicit values override them. Non-SAIL CUDA-compatible builds must still configure NCCL_INCLUDE_DIR and NCCL_LIB_DIR explicitly. To use non-default PCCL, configure its native header and library directories:
+
+```bash
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+
+test -f "$PCCL_INCLUDE_DIR/pccl.h"
+test -f "$PCCL_LIB_DIR/libpccl.so"
+```
+
 Out-of-place conversion preserves the original Git checkout. The build has two stages: Sailify conversion and wheel compilation.
 
 ```bash
@@ -93,6 +105,8 @@ source /usr/local/PPU_SDK/envsetup.sh
 export MAX_JOBS=128
 
 export USE_SAIL=1
+export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
+export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export USE_NCCL=1
