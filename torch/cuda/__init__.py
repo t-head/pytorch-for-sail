@@ -409,7 +409,7 @@ def _warn_unsupported_code(device_index: int, device_cc: int, code_ccs: list[int
 
 
 def _check_capability():
-    if torch.version.cuda is None:  # on ROCm we don't want this check
+    if torch.version.cuda is None or _is_sail_mode():
         return
     arch_list = get_arch_list()
     if len(arch_list) == 0:
@@ -426,6 +426,8 @@ def _check_capability():
 
 
 def _check_cubins():
+    if torch.version.cuda is None or _is_sail_mode():
+        return
     incompatible_device_warn = """
 {} with CUDA capability sm_{} is not compatible with the current PyTorch installation.
 The current PyTorch install supports CUDA capabilities {}.
