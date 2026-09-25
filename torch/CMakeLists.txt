@@ -390,9 +390,19 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/autograd/python_variable.cpp PROPERTIES COMPILE_FLAGS "-Wno-cast-function-type")
 endif()
 
-# Preserve CUDA_GENCODE flags
-if(USE_CUDA)
+# Preserve build architectures for cpp_extension JIT defaults. SAIL wheels
+# record native PPU targets, while CUDA wheels retain their gencode flags.
+if(USE_SAIL)
+  if(DEFINED PYTORCH_SAIL_ARCH AND NOT PYTORCH_SAIL_ARCH STREQUAL "")
+    set(_PYTORCH_SAIL_ARCH "${PYTORCH_SAIL_ARCH}")
+  else()
+    set(_PYTORCH_SAIL_ARCH "$ENV{PYTORCH_SAIL_ARCH}")
+  endif()
+  string(REPLACE ";" " " PYTORCH_SAIL_ARCH_readable "${_PYTORCH_SAIL_ARCH}")
+  set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${PYTORCH_SAIL_ARCH_readable}\"")
+elseif(USE_CUDA)
   torch_cuda_get_nvcc_gencode_flag(_ARCH_FLAGS)
+  string(REPLACE ";" " " _ARCH_FLAGS_readable "${_ARCH_FLAGS}")
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${_ARCH_FLAGS_readable}\"")
 endif()
 

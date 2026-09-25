@@ -3090,6 +3090,26 @@ def _cuda_arch_to_ppu(arch: str) -> str:
     return 'ppu_10'
 
 
+def _parse_sail_arches(arch_list: str, source: str) -> list[str]:
+    """Parse and validate native PPU architectures from an override or wheel."""
+    ppu_arches = []
+    for arch in re.split(r"[;,\s]+", arch_list):
+        if not arch:
+            continue
+        if arch not in ("ppu_10", "ppu_15"):
+            raise RuntimeError(
+                f"Unsupported SAIL architecture '{arch}' from {source}. "
+                "Supported values are ppu_10 and ppu_15."
+            )
+        if arch not in ppu_arches:
+            ppu_arches.append(arch)
+    if not ppu_arches:
+        raise RuntimeError(
+            f"{source} must include ppu_10, ppu_15, or both."
+        )
+    return ppu_arches
+
+
 def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     """
     Determine CUDA arch flags to use.
@@ -3102,47 +3122,41 @@ def _get_cuda_arch_flags(cflags: list[str] | None = None) -> list[str]:
     See select_compute_arch.cmake for corresponding named and supported arches
     when building with CMake.
     """
-    # PPU: hgcc uses --gpu-architecture=ppu_XX, not -gencode
+    # PPU: hgcc uses --gpu-architecture=ppu_XX, not -gencode. Preserve the
+    # ROCm-style fallback order: an explicit native override, then metadata
+    # recorded in the installed SAIL wheel. Device probing is never used.
     if IS_PPU_EXTENSION:
-        if os.environ.get('TORCH_CUDA_ARCH_LIST'):
+        if os.environ.get("TORCH_CUDA_ARCH_LIST"):
             raise RuntimeError(
-                'SAIL extensions do not support TORCH_CUDA_ARCH_LIST. '
-                'Unset it and set PYTORCH_SAIL_ARCH to ppu_10, ppu_15, '
-                'or a semicolon-separated list of both.'
+                "SAIL extensions do not support TORCH_CUDA_ARCH_LIST. "
+                "Unset it and set PYTORCH_SAIL_ARCH to override the "
+                "architectures recorded in the installed SAIL wheel."
             )
 
-        _arch_list = os.environ.get('PYTORCH_SAIL_ARCH')
-        if not _arch_list:
-            raise RuntimeError(
-                'SAIL extensions require PYTORCH_SAIL_ARCH. Set it to ppu_10, '
-                'ppu_15, or a semicolon-separated list of both.'
-            )
-        _arch_list = _arch_list.replace(' ', ';')
-        ppu_arches = []
-        for arch in _arch_list.split(';'):
-            if not arch:
-                continue
-            if arch not in ('ppu_10', 'ppu_15'):
-                raise ValueError(
-                    f"Unsupported PYTORCH_SAIL_ARCH value '{arch}'. "
-                    'Supported values are ppu_10 and ppu_15.'
-                )
-            ppu_arches.append(arch)
-        if not ppu_arches:
-            raise ValueError(
-                'PYTORCH_SAIL_ARCH must include ppu_10, ppu_15, or both.'
-            )
-
-        # Do not inject a duplicate architecture option when callers provide one.
         if cflags is not None:
             for flag in cflags:
-                if 'TORCH_EXTENSION_NAME' in flag:
+                if "TORCH_EXTENSION_NAME" in flag:
                     continue
-                if 'arch' in flag or '--gpu-architecture' in flag:
+                if flag == "--gpu-architecture" or flag == "-arch" or flag.startswith(
+                    ("--gpu-architecture=", "-arch=")
+                ):
                     return []
 
-        # hgcc supports comma-separated arches in a single --gpu-architecture
-        return [f'--gpu-architecture={",".join(ppu_arches)}']
+        arch_list = os.environ.get("PYTORCH_SAIL_ARCH")
+        arch_source = "PYTORCH_SAIL_ARCH"
+        if not arch_list:
+            arch_list = torch._C._cuda_getArchFlags()
+            arch_source = "the installed SAIL wheel"
+        if not arch_list:
+            raise RuntimeError(
+                "SAIL extensions could not determine target architectures. "
+                "Rebuild torch with SAIL architecture metadata or set "
+                "PYTORCH_SAIL_ARCH to ppu_10, ppu_15, or both."
+            )
+
+        ppu_arches = _parse_sail_arches(arch_list, arch_source)
+        # hgcc supports comma-separated architectures in one option.
+        return [f"--gpu-architecture={','.join(ppu_arches)}"]
 
     # If cflags is given, there may already be user-provided arch flags in it
     # (from `extra_compile_args`)
