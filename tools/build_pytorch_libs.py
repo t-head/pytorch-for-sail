@@ -87,8 +87,12 @@ def build_pytorch(
     cmake: CMake,
 ) -> None:
     my_env = _create_build_env()
+    # SAIL always routes distributed communication to native PCCL in CMake.
+    # Skip the upstream bundled NCCL checkout before CMake performs that route.
+    use_native_pccl = check_env_flag("USE_SAIL")
     if (
-        not check_negative_env_flag("USE_DISTRIBUTED")
+        not use_native_pccl
+        and not check_negative_env_flag("USE_DISTRIBUTED")
         and not check_negative_env_flag("USE_CUDA")
         and not check_negative_env_flag("USE_NCCL")
         and not check_env_flag("USE_SYSTEM_NCCL")

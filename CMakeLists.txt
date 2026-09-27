@@ -305,6 +305,15 @@ cmake_dependent_option(USE_RCCL "Use RCCL" ON "USE_NCCL;NOT WIN32" OFF)
 cmake_dependent_option(USE_STATIC_NCCL "Use static NCCL" OFF "USE_NCCL" OFF)
 cmake_dependent_option(USE_SYSTEM_NCCL "Use system-wide NCCL" OFF "USE_NCCL"
                        OFF)
+cmake_dependent_option(USE_PCCL "Use native PCCL for SAIL distributed communication" ON
+                       "USE_SAIL;USE_DISTRIBUTED;UNIX;NOT APPLE" OFF)
+if(USE_SAIL)
+  # SAIL always uses native PCCL for distributed communication. Preserve the
+  # upstream NCCL C++/CMake compatibility boundary without exposing it as a
+  # separate SAIL-facing selection.
+  set(USE_PCCL ON CACHE BOOL "Native PCCL enabled by USE_SAIL" FORCE)
+  set(USE_NCCL ON CACHE BOOL "NCCL compatibility enabled by USE_PCCL" FORCE)
+endif()
 cmake_dependent_option(USE_NVSHMEM "Use NVSHMEM" ON
                        "USE_DISTRIBUTED;USE_CUDA OR USE_ROCM;UNIX;NOT APPLE" OFF)
 option(USE_NNAPI "Use NNAPI" OFF)

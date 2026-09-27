@@ -1299,7 +1299,16 @@ class build_ext(setuptools.command.build_ext.build_ext):
                 report("-- Not using CBLAS in MKLDNN")
         else:
             report("-- Not using MKLDNN")
-        if cmake_cache_vars["USE_NCCL"] and cmake_cache_vars["USE_SYSTEM_NCCL"]:
+        if cmake_cache_vars.get("USE_SAIL"):
+            if cmake_cache_vars.get("USE_PCCL"):
+                report(
+                    "-- Using system provided PCCL library at "
+                    f"{cmake_cache_vars['PCCL_LIBRARIES']}, "
+                    f"{cmake_cache_vars['PCCL_INCLUDE_DIRS']}"
+                )
+            else:
+                report("-- Not using PCCL")
+        elif cmake_cache_vars["USE_NCCL"] and cmake_cache_vars["USE_SYSTEM_NCCL"]:
             report(
                 "-- Using system provided NCCL library at "
                 f"{cmake_cache_vars['NCCL_LIBRARIES']}, "
@@ -1791,10 +1800,16 @@ def Init_ppu_build_env() -> None:
         lib_var = "PCCL_LIB_DIR"
         library_name = "PCCL"
         ppu_sdk = os.environ.get("PPU_SDK", "/usr/local/PPU_SDK")
-        ppu_comm_include = os.environ.get(include_var) or os.path.join(
-            ppu_sdk, "include"
-        )
-        ppu_comm_lib = os.environ.get(lib_var) or os.path.join(ppu_sdk, "lib")
+        sdk_include = os.path.join(ppu_sdk, "include")
+        sdk_lib = os.path.join(ppu_sdk, "lib")
+        if not (
+            os.path.isfile(os.path.join(sdk_include, "pccl.h"))
+            and os.path.isfile(os.path.join(sdk_lib, "libpccl.so"))
+        ):
+            sdk_include = os.path.join(ppu_sdk, "targets", "x86_64-linux", "include")
+            sdk_lib = os.path.join(ppu_sdk, "targets", "x86_64-linux", "lib")
+        ppu_comm_include = os.environ.get(include_var) or sdk_include
+        ppu_comm_lib = os.environ.get(lib_var) or sdk_lib
         os.environ[include_var] = ppu_comm_include
         os.environ[lib_var] = ppu_comm_lib
     else:
@@ -1817,13 +1832,10 @@ def Init_ppu_build_env() -> None:
 
     check_path_exists(ppu_comm_include)
     check_path_exists(ppu_comm_lib)
-    # FindNCCL.cmake retains upstream NCCL_* variables in both modes.
-    os.environ["NCCL_INCLUDE_DIR"] = ppu_comm_include
-    os.environ["NCCL_LIB_DIR"] = ppu_comm_lib
     print(f"Using {include_var}: {ppu_comm_include}")
     print(f"Using {lib_var}: {ppu_comm_lib}")
     if use_sail:
-        print("PPU build mode: SAIL (USE_SAIL=1), NCCL mapped to PCCL")
+        print("PPU build mode: SAIL (USE_SAIL=1), using native PCCL")
 
     # enable building flash attention for scaled dot product attention
     if os.getenv("USE_FLASH_ATTENTION") is None:
@@ -1844,10 +1856,9 @@ def Init_ppu_build_env() -> None:
             )
         sail_arch = os.getenv("PYTORCH_SAIL_ARCH")
         if not sail_arch:
-            raise RuntimeError(
-                "SAIL builds require PYTORCH_SAIL_ARCH. Set it to ppu_10, "
-                "ppu_15, or a semicolon-separated list of both."
-            )
+            sail_arch = "ppu_10;ppu_15"
+            os.environ["PYTORCH_SAIL_ARCH"] = sail_arch
+            print("PYTORCH_SAIL_ARCH is not set; defaulting to ppu_10;ppu_15")
         sail_arches = [
             arch for arch in sail_arch.replace(" ", ";").split(";") if arch
         ]
@@ -1865,13 +1876,15 @@ def Init_ppu_build_env() -> None:
     elif os.getenv("TORCH_CUDA_ARCH_LIST") is None:
         os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
 
-    # enable nccl
-    if os.getenv("USE_NCCL") is None:
-        os.environ["USE_NCCL"] = "True"
-
-    # enable use of system-wide nccl
-    if os.getenv("USE_SYSTEM_NCCL") is None:
-        os.environ["USE_SYSTEM_NCCL"] = "1"
+    if use_sail:
+        # SAIL always uses the native PCCL route; CMake applies the same rule.
+        os.environ["USE_PCCL"] = "1"
+    else:
+        # CUDA-compat builds retain the upstream NCCL configuration interface.
+        if os.getenv("USE_NCCL") is None:
+            os.environ["USE_NCCL"] = "True"
+        if os.getenv("USE_SYSTEM_NCCL") is None:
+            os.environ["USE_SYSTEM_NCCL"] = "1"
 
     if os.getenv("BUILD_TEST") is None:
         os.environ["BUILD_TEST"] = "False"
@@ -2141,11 +2154,18 @@ def main() -> None:
         if not converted_in_place:
             sys.exit(0)
 
-    # NOTE: PPU env init is already performed at module level (right before
-    # setup() call) so that cmake spawned by setuptools ext_modules build
-    # hook can receive validated PCCL or NCCL locations. Do not re-init here.
-
     on_ppu = os.environ.get("PPU_SDK")
+    use_sail = str2bool(os.getenv("USE_SAIL"))
+    if use_sail and not on_ppu:
+        raise RuntimeError(
+            "SAIL builds require PPU_SDK. Source the SDK envsetup.sh script or "
+            "set PPU_SDK to the SDK root before building."
+        )
+    if on_ppu:
+        # Configure communication paths before PPU patches, dependency setup,
+        # and extension configuration.
+        Init_ppu_build_env()
+
     use_fa = os.environ.get("USE_FLASH_ATTENTION")
     if use_fa in ["True", "1", "TRUE"] and on_ppu:
         torch_root = os.path.dirname(os.path.abspath(__file__))
@@ -2339,16 +2359,6 @@ def main() -> None:
     else:
         # no extensions in BUILD_LIBTORCH_WHL mode
         ext_modules = []
-
-    # ── PPU env init BEFORE setup() triggers cmake subprocess ──
-    # setup() below (line ~1968) spawns cmake via setuptools' ext_modules
-    # build hook; cmake's FindNCCL.cmake receives the selected PCCL or NCCL
-    # locations through its internal NCCL-compatible variables at configure time. If we defer env init to main() (which runs after
-    # setup() due to `if __name__ == "__main__"` being at the very bottom),
-    # cmake has already failed with "Could NOT find NCCL".
-    # Do module-level init here, gated by PPU_SDK (same guard as main()).
-    if os.environ.get("PPU_SDK"):
-        Init_ppu_build_env()
 
     setup(
         name=TORCH_PACKAGE_NAME,

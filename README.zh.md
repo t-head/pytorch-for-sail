@@ -79,17 +79,19 @@ python3 -m pip install wheel
 
 #### 通信库路径配置
 
-通信库路径必须显式配置，`setup.py` 不提供硬编码默认值。SAIL 构建前，请配置原生 PCCL 的头文件和库目录：
+SAIL 构建使用原生 PCCL。`setup.py` 默认搜索 `$PPU_SDK/include` 与 `$PPU_SDK/lib`；仅在使用 SDK 外部安装的 PCCL 时，才需要设置以下变量：
 
 ```bash
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export PCCL_INCLUDE_DIR=/path/to/include
+export PCCL_LIB_DIR=/path/to/lib
 
 test -f "$PCCL_INCLUDE_DIR/pccl.h"
 test -f "$PCCL_LIB_DIR/libpccl.so"
 ```
 
-CUDA-compat 构建（未设置 `USE_SAIL` 或值为 `0`）则应配置 `NCCL_INCLUDE_DIR` 与 `NCCL_LIB_DIR`。构建系统会将选定路径映射到内部 NCCL 兼容的 CMake 变量。
+`PCCL_INCLUDE_DIR` 与 `PCCL_LIB_DIR` 是输入目录；`PCCL_INCLUDE_DIRS` 与 `PCCL_LIBRARIES` 是 CMake 查找结果，不能作为环境变量导出。修改路径后，请删除已有的 `build/` 目录或使用新的构建目录，以清除 `CMakeCache.txt`。
+
+CUDA-compat 构建（未设置 `USE_SAIL` 或值为 `0`）则应配置 `NCCL_INCLUDE_DIR` 与 `NCCL_LIB_DIR`。
 
 #### 方式一：原地转换
 
@@ -100,14 +102,10 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
-export USE_SYSTEM_NCCL=1
 export BUILD_TEST=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=32
 
 # 发布版本号；不设置时默认为 version.txt 派生的开发版本（带 +git 标识）
@@ -129,14 +127,10 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
-export USE_SYSTEM_NCCL=1
 export BUILD_TEST=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=32
 
 # 发布版本号；不设置时默认为 version.txt 派生的开发版本（带 +git 标识）
@@ -171,15 +165,15 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 | `SAILIFY_OUTPUT_DIR` | `/path/to/pytorch-sail-build` | 源树外转换目录，必须位于源码树之外；设置后切换为源树外转换 |
 | `SAILIFY_IN_PLACE` | `1` | 显式声明原地转换（默认行为），通常无需设置；不得与 `SAILIFY_OUTPUT_DIR` 同时设置 |
 | `SAILIFY_FORCE` | `1` | 强制重新转换源码，仅在需要时设置 |
-| `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | 真武 PPU 目标架构列表，详见下文 |
-| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | SAIL 构建所需的原生 PCCL 头文件和库目录 |
+| `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | 真武 PPU 目标架构列表；默认 `ppu_10;ppu_15`，详见下文 |
+| `USE_PCCL` | `1` | 启用 SAIL 构建的原生 PCCL 通信 |
+| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | 可选的 PCCL 目录覆盖；默认使用 `$PPU_SDK/include` 与 `$PPU_SDK/lib` |
 | `MAX_JOBS` | `32` | 最大并行任务数；根据可用内存调整 |
 | `PYTORCH_VERSION` | `2.10.0` | wheel 发布版本号声明 |
 | `PYTORCH_BUILD_VERSION` | `2.10.0` | 构建发布 wheel 时使用的版本号；须与 `PYTORCH_BUILD_NUMBER` 同时设置 |
 | `PYTORCH_BUILD_NUMBER` | `0` | 构建编号；设置后版本号不再携带 `+git<提交号>` 本地标识 |
 | `BUILD_TEST` | `1` | 构建 C++ 测试目标 |
 | `USE_FLASH_ATTENTION` / `USE_MEM_EFF_ATTENTION` | `1` | 构建已适配的注意力算子 |
-| `USE_NCCL` / `USE_SYSTEM_NCCL` | `1` | 使用 SAIL SDK 提供的 PCCL |
 
 #### 目标架构
 
@@ -196,7 +190,7 @@ export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"   # 同时编译 ppu_10 和 ppu_15
 -arch ppu_10 -arch ppu_15
 ```
 
-必须显式设置 `PYTORCH_SAIL_ARCH`。未设置该变量或指定不支持的架构时，构建会报错并提示正确配置。
+未设置或设为空 `PYTORCH_SAIL_ARCH` 时，默认使用 `ppu_10;ppu_15` 混编。可显式设置为单一架构或其他架构组合；指定不支持的架构时，构建会报错。
 
 ### 安装 wheel
 

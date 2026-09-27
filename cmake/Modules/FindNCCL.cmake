@@ -26,30 +26,20 @@ list(APPEND NCCL_ROOT $ENV{NCCL_ROOT_DIR} ${CUDA_TOOLKIT_ROOT_DIR})
 # Compatible layer for CMake <3.12. NCCL_ROOT will be accounted in for searching paths and libraries for CMake >=3.12.
 list(APPEND CMAKE_PREFIX_PATH ${NCCL_ROOT})
 
-if(USE_SAIL)
-  # PPU sail path: NCCL is backed by native PCCL.
-  # Keep output variable names as NCCL_* because upstream CMake still consumes
-  # NCCL_INCLUDE_DIRS / NCCL_LIBRARIES via __caffe2_nccl.
-  find_path(NCCL_INCLUDE_DIRS
-    NAMES pccl.h
-    HINTS ${NCCL_INCLUDE_DIR})
-  set(NCCL_LIBNAME "pccl")
-else()
-  find_path(NCCL_INCLUDE_DIRS
-    NAMES nccl.h
-    HINTS ${NCCL_INCLUDE_DIR})
+find_path(NCCL_INCLUDE_DIRS
+  NAMES nccl.h
+  HINTS ${NCCL_INCLUDE_DIR})
 
-  if (USE_STATIC_NCCL)
-    MESSAGE(STATUS "USE_STATIC_NCCL is set. Linking with static NCCL library.")
-    SET(NCCL_LIBNAME "nccl_static")
-    if (NCCL_VERSION)  # Prefer the versioned library if a specific NCCL version is specified
-      set(CMAKE_FIND_LIBRARY_SUFFIXES ".a.${NCCL_VERSION}" ${CMAKE_FIND_LIBRARY_SUFFIXES})
-    endif()
-  else()
-    SET(NCCL_LIBNAME "nccl")
-    if (NCCL_VERSION)  # Prefer the versioned library if a specific NCCL version is specified
-      set(CMAKE_FIND_LIBRARY_SUFFIXES ".so.${NCCL_VERSION}" ${CMAKE_FIND_LIBRARY_SUFFIXES})
-    endif()
+if(USE_STATIC_NCCL)
+  message(STATUS "USE_STATIC_NCCL is set. Linking with static NCCL library.")
+  set(NCCL_LIBNAME "nccl_static")
+  if(NCCL_VERSION)  # Prefer the versioned library if a specific NCCL version is specified
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a.${NCCL_VERSION}" ${CMAKE_FIND_LIBRARY_SUFFIXES})
+  endif()
+else()
+  set(NCCL_LIBNAME "nccl")
+  if(NCCL_VERSION)  # Prefer the versioned library if a specific NCCL version is specified
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".so.${NCCL_VERSION}" ${CMAKE_FIND_LIBRARY_SUFFIXES})
   endif()
 endif()
 
@@ -60,24 +50,8 @@ find_library(NCCL_LIBRARIES
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(NCCL DEFAULT_MSG NCCL_INCLUDE_DIRS NCCL_LIBRARIES)
 
-if(NCCL_FOUND)  # obtaining NCCL/PCCL version and some sanity checks
-  if(USE_SAIL)
-    set (NCCL_HEADER_FILE "${NCCL_INCLUDE_DIRS}/pccl.h")
-    message (STATUS "Determining PCCL version from ${NCCL_HEADER_FILE}...")
-    file(STRINGS "${NCCL_HEADER_FILE}" _PCCL_MAJOR_LINE REGEX "^#define[ \t]+PCCL_MAJOR[ \t]+[0-9]+")
-    file(STRINGS "${NCCL_HEADER_FILE}" _PCCL_MINOR_LINE REGEX "^#define[ \t]+PCCL_MINOR[ \t]+[0-9]+")
-    file(STRINGS "${NCCL_HEADER_FILE}" _PCCL_PATCH_LINE REGEX "^#define[ \t]+PCCL_PATCH[ \t]+[0-9]+")
-    string(REGEX REPLACE ".*PCCL_MAJOR[ \t]+([0-9]+).*" "\\1" _PCCL_MAJOR "${_PCCL_MAJOR_LINE}")
-    string(REGEX REPLACE ".*PCCL_MINOR[ \t]+([0-9]+).*" "\\1" _PCCL_MINOR "${_PCCL_MINOR_LINE}")
-    string(REGEX REPLACE ".*PCCL_PATCH[ \t]+([0-9]+).*" "\\1" _PCCL_PATCH "${_PCCL_PATCH_LINE}")
-    if(_PCCL_MAJOR AND _PCCL_MINOR AND _PCCL_PATCH)
-      set(NCCL_VERSION_FROM_HEADER "${_PCCL_MAJOR}.${_PCCL_MINOR}.${_PCCL_PATCH}")
-      message(STATUS "PCCL version (NCCL compat): ${NCCL_VERSION_FROM_HEADER}")
-    else()
-      message(STATUS "PCCL version (NCCL compat): unknown")
-    endif()
-  else()
-    set (NCCL_HEADER_FILE "${NCCL_INCLUDE_DIRS}/nccl.h")
+if(NCCL_FOUND)  # obtaining NCCL version and some sanity checks
+  set (NCCL_HEADER_FILE "${NCCL_INCLUDE_DIRS}/nccl.h")
     message (STATUS "Determining NCCL version from ${NCCL_HEADER_FILE}...")
     set (OLD_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
     list (APPEND CMAKE_REQUIRED_INCLUDES ${NCCL_INCLUDE_DIRS})
@@ -109,8 +83,7 @@ if(NCCL_FOUND)  # obtaining NCCL/PCCL version and some sanity checks
       message(STATUS "NCCL version: ${NCCL_VERSION_FROM_HEADER}")
     endif ()
 
-    set (CMAKE_REQUIRED_INCLUDES ${OLD_CMAKE_REQUIRED_INCLUDES})
-  endif()
-  message(STATUS "Found NCCL/PCCL (include: ${NCCL_INCLUDE_DIRS}, library: ${NCCL_LIBRARIES})")
+  set(CMAKE_REQUIRED_INCLUDES ${OLD_CMAKE_REQUIRED_INCLUDES})
+  message(STATUS "Found NCCL (include: ${NCCL_INCLUDE_DIRS}, library: ${NCCL_LIBRARIES})")
   mark_as_advanced(NCCL_ROOT_DIR NCCL_INCLUDE_DIRS NCCL_LIBRARIES)
 endif()

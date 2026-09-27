@@ -79,17 +79,19 @@ Build the T-Head SAIL wheel directly with `python3 setup.py bdist_wheel`. The pr
 
 #### Communication Library Paths
 
-Communication-library paths must be configured explicitly; `setup.py` does not provide hardcoded defaults. For SAIL builds, configure the native PCCL header and library directories before building:
+SAIL builds use native PCCL. By default, `setup.py` searches `$PPU_SDK/include` and `$PPU_SDK/lib`; set the following variables only to use a PCCL installation outside the SDK:
 
 ```bash
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export PCCL_INCLUDE_DIR=/path/to/include
+export PCCL_LIB_DIR=/path/to/lib
 
 test -f "$PCCL_INCLUDE_DIR/pccl.h"
 test -f "$PCCL_LIB_DIR/libpccl.so"
 ```
 
-For CUDA-compat builds (`USE_SAIL` unset or `0`), configure `NCCL_INCLUDE_DIR` and `NCCL_LIB_DIR` instead. The build maps the selected paths to its internal NCCL-compatible CMake variables.
+`PCCL_INCLUDE_DIR` and `PCCL_LIB_DIR` are input directories. `PCCL_INCLUDE_DIRS` and `PCCL_LIBRARIES` are CMake results and must not be exported. After changing paths, remove the existing `build/` directory or use a fresh build directory to clear `CMakeCache.txt`.
+
+For CUDA-compat builds (`USE_SAIL` unset or `0`), configure `NCCL_INCLUDE_DIR` and `NCCL_LIB_DIR` instead.
 
 #### Option 1: In-place Conversion
 
@@ -100,14 +102,10 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
-export USE_SYSTEM_NCCL=1
 export BUILD_TEST=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=32
 
 # Release version; without these the wheel defaults to the development
@@ -130,14 +128,10 @@ cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
 export USE_SAIL=1
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
-export USE_SYSTEM_NCCL=1
 export BUILD_TEST=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=32
 
 # Release version; without these the wheel defaults to the development
@@ -173,15 +167,15 @@ The `.sailify_done` marker in the converted tree prevents redundant conversion. 
 | `SAILIFY_OUTPUT_DIR` | `/path/to/pytorch-sail-build` | Out-of-place conversion directory; must be outside the source tree; setting it selects out-of-place conversion |
 | `SAILIFY_IN_PLACE` | `1` | Explicitly selects in-place conversion (the default behavior); normally not needed; must not be set together with `SAILIFY_OUTPUT_DIR` |
 | `SAILIFY_FORCE` | `1` | Forces source regeneration; set only when needed |
-| `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | Zhenwu PPU target architecture list; see below |
-| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | Required native PCCL header and library directories for SAIL builds |
+| `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | PPU target architecture list; defaults to `ppu_10;ppu_15`; see below |
+| `USE_PCCL` | `1` | Enables native PCCL communication for SAIL builds |
+| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | Optional override for PCCL directories; defaults to `$PPU_SDK/include` and `$PPU_SDK/lib` |
 | `MAX_JOBS` | `32` | Maximum parallel jobs; adjust for available memory |
 | `PYTORCH_VERSION` | `2.10.0` | Declares the wheel release version |
 | `PYTORCH_BUILD_VERSION` | `2.10.0` | Version used when building a release wheel; must be set together with `PYTORCH_BUILD_NUMBER` |
 | `PYTORCH_BUILD_NUMBER` | `0` | Build number; when set, the version no longer carries a `+git<commit>` local identifier |
 | `BUILD_TEST` | `1` | Builds C++ test targets |
 | `USE_FLASH_ATTENTION` / `USE_MEM_EFF_ATTENTION` | `1` | Builds the adapted attention operators |
-| `USE_NCCL` / `USE_SYSTEM_NCCL` | `1` | Uses PCCL provided by the SAIL SDK |
 
 #### Target Architectures
 
@@ -198,7 +192,7 @@ The build system passes the configured values directly to `hgcc` as architecture
 -arch ppu_10 -arch ppu_15
 ```
 
-`PYTORCH_SAIL_ARCH` must be set explicitly. The build fails with configuration guidance if the variable is unset or an unsupported architecture is specified.
+`PYTORCH_SAIL_ARCH` defaults to `ppu_10;ppu_15` when unset or empty. Set it explicitly to build for one architecture or a different architecture combination. Unsupported architecture values fail during configuration.
 
 ### Install the Wheel
 

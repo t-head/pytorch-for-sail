@@ -1122,8 +1122,13 @@ if(USE_ROCM)
   endif()
 endif()
 
-# ---[ NCCL
-if(USE_NCCL)
+# ---[ GPU collective communication
+if(USE_SAIL)
+  if(USE_PCCL)
+    include(${CMAKE_CURRENT_LIST_DIR}/External/pccl.cmake)
+    list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS __caffe2_pccl)
+  endif()
+elseif(USE_NCCL)
   if(NOT (USE_CUDA OR USE_ROCM))
     message(WARNING
         "Not using CUDA/ROCM, so disabling USE_NCCL. Suppress this warning with "
@@ -1304,13 +1309,16 @@ if(USE_GLOO)
         set(GLOO_USE_CUDA_TOOLKIT ON CACHE BOOL "" FORCE)
       endif()
 
-      # Disable NCCL/RCCL since we don't use Gloo+NCCL, make sure to re-enable it!
+      # Disable external collective backends while configuring Gloo, then restore them.
       set(USE_NCCL_SAVED ${USE_NCCL})
+      set(USE_PCCL_SAVED ${USE_PCCL})
       set(USE_RCCL_SAVED ${USE_RCCL})
       set(USE_NCCL OFF)
+      set(USE_PCCL OFF)
       set(USE_RCCL OFF)
       add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../third_party/gloo)
       set(USE_NCCL ${USE_NCCL_SAVED})
+      set(USE_PCCL ${USE_PCCL_SAVED})
       set(USE_RCCL ${USE_RCCL_SAVED})
 
       # PPU sail: restore USE_CUDA overridden for gloo above, then make gloo_hg
