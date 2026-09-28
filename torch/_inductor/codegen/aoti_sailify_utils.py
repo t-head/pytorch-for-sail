@@ -87,9 +87,9 @@ def maybe_sailify_code_wrapper(source_codes: str, force_sailify: bool = False) -
     # keyword at the beginning of code line. However, this can happen in codegen,
     # which will cause the pattern to not match.
 
-    # Note that lookahead (?=\W) is still needed to keep sailification idempotent, for example
-    # we need to skip replacing "getStreamFromExternal" in "getStreamFromExternalMasqueradingAsCUDA"
-    RE_PPU_PREPROCESSOR = re.compile(rf"({_PPU_TRIE.export_to_regex()})(?=\W)")
+    # Keep token-boundary replacement idempotent while also converting a bare
+    # identifier at end-of-string, such as a device codegen kernel type.
+    RE_PPU_PREPROCESSOR = re.compile(rf"({_PPU_TRIE.export_to_regex()})(?=\W|$)")
 
     source_codes = RE_PPU_PREPROCESSOR.sub(c2_repl, source_codes)  # type: ignore[arg-type]
     return source_codes
