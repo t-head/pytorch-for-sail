@@ -35,7 +35,6 @@ export USE_PCCL=1
 unset USE_NCCL
 unset USE_SYSTEM_NCCL
 export BUILD_TEST="${BUILD_TEST:-0}"
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=128
 
 SOURCE_VERSION="$(tr -d '[:space:]' < "$SOURCE_DIR/version.txt")"
@@ -54,7 +53,7 @@ unset TORCH_CUDA_ARCH_LIST
     echo "[$(date '+%F %T')] SAIL build started"
     echo "source: $SOURCE_DIR"
     echo "output: $SAILIFY_OUTPUT_DIR"
-    echo "architectures: $PYTORCH_SAIL_ARCH"
+    echo "architectures: ${PYTORCH_SAIL_ARCH:-ppu_10;ppu_15 (setup.py default)}"
     echo "version: $PYTORCH_BUILD_VERSION"
     echo "cmake: $(cmake --version | head -1)"
 

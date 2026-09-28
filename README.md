@@ -87,11 +87,11 @@ export MAX_JOBS=128
 
 #### Communication Library Paths
 
-SAIL builds default PCCL_INCLUDE_DIR and PCCL_LIB_DIR to $PPU_SDK/include and $PPU_SDK/lib when unset or empty; explicit values override them. Non-SAIL CUDA-compatible builds must still configure NCCL_INCLUDE_DIR and NCCL_LIB_DIR explicitly. To use non-default PCCL, configure its native header and library directories:
+SAIL builds default PCCL_INCLUDE_DIR and PCCL_LIB_DIR to $PPU_SDK/include and $PPU_SDK/lib when unset or empty; explicit values override them. SAIL uses native PCCL; do not set USE_NCCL or USE_SYSTEM_NCCL. Non-SAIL CUDA-compatible builds must still configure NCCL_INCLUDE_DIR and NCCL_LIB_DIR explicitly. To use non-default PCCL, configure its native header and library directories:
 
 ```bash
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
+export PCCL_INCLUDE_DIR=/opt/pccl/include
+export PCCL_LIB_DIR=/opt/pccl/lib
 
 test -f "$PCCL_INCLUDE_DIR/pccl.h"
 test -f "$PCCL_LIB_DIR/libpccl.so"
@@ -105,16 +105,11 @@ source /usr/local/PPU_SDK/envsetup.sh
 export MAX_JOBS=128
 
 export USE_SAIL=1
-export PCCL_INCLUDE_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/include
-export PCCL_LIB_DIR=/usr/local/PPU_SDK/targets/x86_64-linux/lib
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
 export USE_DISTRIBUTED=1
-export USE_SYSTEM_NCCL=1
 export BUILD_CAFFE2=0
 export BUILD_TEST=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export PYTORCH_VERSION=2.13.0
 export PYTORCH_BUILD_VERSION=2.13.0
 export PYTORCH_BUILD_NUMBER=0
@@ -138,7 +133,7 @@ python3 setup.py bdist_wheel
 
 After a successful build, the wheel is available at `$SAILIFY_OUTPUT_DIR/dist/torch-*.whl`. The `.sailify_done` file records a source fingerprint and prevents redundant conversion. Source changes trigger regeneration automatically; set `SAILIFY_FORCE=1` to force regeneration.
 
-`PYTORCH_SAIL_ARCH` accepts `ppu_10` and `ppu_15`; separate multiple architectures with semicolons. In SAIL mode, `setup.py` automatically maps the NCCL build paths to PCCL in the SAIL SDK, so `NCCL_INCLUDE_DIR` and `NCCL_LIB_DIR` do not need to be set manually.
+`PYTORCH_SAIL_ARCH` accepts `ppu_10` and `ppu_15`; separate multiple architectures with semicolons. When it is unset or empty, SAIL builds default to `ppu_10;ppu_15`; set it explicitly to override that target set.
 
 For CI or a disposable checkout, build in place instead:
 
