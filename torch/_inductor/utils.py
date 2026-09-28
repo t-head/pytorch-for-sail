@@ -4307,6 +4307,12 @@ def is_cudagraph_unsafe_fx_node(fx_node: torch.fx.Node) -> bool:
     """
     target = fx_node.target
 
+    # SAIL cannot capture a device-to-CPU transfer. Partition it before capture.
+    if torch.version.sail is not None and str(target) == "prims.device_put.default":
+        destination = fx_node.args[1] if len(fx_node.args) > 1 else None
+        if str(destination) in ("cpu", "device(type='cpu')", "device(type=cpu)"):
+            return True
+
     # Check against the forbidden ops set
     if str(target) in FORBIDDEN_CUDAGRAPH_OPS:
         return True
