@@ -1913,10 +1913,16 @@ def Init_ppu_build_env() -> None:
         lib_var = "PCCL_LIB_DIR"
         library_name = "PCCL"
         ppu_sdk = os.environ.get("PPU_SDK", "/usr/local/PPU_SDK")
-        ppu_comm_include = os.environ.get(include_var) or os.path.join(
-            ppu_sdk, "include"
-        )
-        ppu_comm_lib = os.environ.get(lib_var) or os.path.join(ppu_sdk, "lib")
+        sdk_include = os.path.join(ppu_sdk, "include")
+        sdk_lib = os.path.join(ppu_sdk, "lib")
+        if not (
+            os.path.isfile(os.path.join(sdk_include, "pccl.h"))
+            and os.path.isfile(os.path.join(sdk_lib, "libpccl.so"))
+        ):
+            sdk_include = os.path.join(ppu_sdk, "targets", "x86_64-linux", "include")
+            sdk_lib = os.path.join(ppu_sdk, "targets", "x86_64-linux", "lib")
+        ppu_comm_include = os.environ.get(include_var) or sdk_include
+        ppu_comm_lib = os.environ.get(lib_var) or sdk_lib
         os.environ[include_var] = ppu_comm_include
         os.environ[lib_var] = ppu_comm_lib
     else:
@@ -1939,13 +1945,10 @@ def Init_ppu_build_env() -> None:
 
     check_path_exists(ppu_comm_include)
     check_path_exists(ppu_comm_lib)
-    # FindNCCL.cmake retains upstream NCCL_* variables in both modes.
-    os.environ["NCCL_INCLUDE_DIR"] = ppu_comm_include
-    os.environ["NCCL_LIB_DIR"] = ppu_comm_lib
     print(f"Using {include_var}: {ppu_comm_include}")
     print(f"Using {lib_var}: {ppu_comm_lib}")
     if use_sail:
-        print("PPU build mode: SAIL (USE_SAIL=1), NCCL mapped to PCCL")
+        print("PPU build mode: SAIL (USE_SAIL=1), using native PCCL")
 
     # enable building flash attention for scaled dot product attention
     if os.getenv("USE_FLASH_ATTENTION") is None:
@@ -1983,13 +1986,15 @@ def Init_ppu_build_env() -> None:
     elif os.getenv("TORCH_CUDA_ARCH_LIST") is None:
         os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0"
 
-    # enable nccl
-    if os.getenv("USE_NCCL") is None:
-        os.environ["USE_NCCL"] = "True"
-
-    # enable use of system-wide nccl
-    if os.getenv("USE_SYSTEM_NCCL") is None:
-        os.environ["USE_SYSTEM_NCCL"] = "1"
+    if use_sail:
+        # SAIL always uses the native PCCL route; CMake applies the same rule.
+        os.environ["USE_PCCL"] = "1"
+    else:
+        # CUDA-compatible builds retain the upstream NCCL configuration interface.
+        if os.getenv("USE_NCCL") is None:
+            os.environ["USE_NCCL"] = "True"
+        if os.getenv("USE_SYSTEM_NCCL") is None:
+            os.environ["USE_SYSTEM_NCCL"] = "1"
 
     if os.getenv("BUILD_TEST") is None:
         os.environ["BUILD_TEST"] = "False"
