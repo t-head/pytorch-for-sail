@@ -31,8 +31,9 @@ fi
 export USE_SAIL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
-export USE_NCCL=1
-export USE_SYSTEM_NCCL=1
+export USE_PCCL=1
+unset USE_NCCL
+unset USE_SYSTEM_NCCL
 export BUILD_TEST="${BUILD_TEST:-0}"
 export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export MAX_JOBS=128
