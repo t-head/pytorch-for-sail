@@ -1969,10 +1969,9 @@ def Init_ppu_build_env() -> None:
             )
         sail_arch = os.getenv("PYTORCH_SAIL_ARCH")
         if not sail_arch:
-            raise RuntimeError(
-                "SAIL builds require PYTORCH_SAIL_ARCH. Set it to ppu_10, "
-                "ppu_15, or a semicolon-separated list of both."
-            )
+            sail_arch = "ppu_10;ppu_15"
+            os.environ["PYTORCH_SAIL_ARCH"] = sail_arch
+            print("PYTORCH_SAIL_ARCH is not set; defaulting to ppu_10;ppu_15")
         sail_arches = [
             arch for arch in sail_arch.replace(" ", ";").split(";") if arch
         ]
