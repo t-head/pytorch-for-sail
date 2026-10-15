@@ -84,8 +84,17 @@ def _cutlass_include_paths() -> list[str]:
         from torch.utils import cpp_extension
 
         paths.append(os.path.realpath(cpp_extension._join_ppu_home("include")))
-        compat_dir = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+        _dev_root = os.path.dirname(os.path.dirname(torch.__file__))
+        if os.path.isfile(
+            os.path.join(_dev_root, ".ppu_compat", "compatible_wrapper.h")
+        ):
+            paths.append(_dev_root)
+            paths.append(os.path.join(_dev_root, ".ppu_compat"))
+        compat_dir = os.path.join(
+            os.path.dirname(torch.__file__), "include", ".ppu_compat"
+        )
         if os.path.isdir(compat_dir):
+            paths.append(os.path.dirname(compat_dir))
             paths.append(compat_dir)
     return paths
 

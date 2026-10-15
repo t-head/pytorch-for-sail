@@ -2665,7 +2665,9 @@ class CppBuilder:
                 hgcc_path = os.path.join(ppu_home, "bin", "hgcc")
                 ppu_include = os.path.join(ppu_home, "include")
                 ppu_lib = os.path.join(ppu_home, "lib")
-                ppu_compat_dir = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+                ppu_compat_dir = os.path.join(
+                    os.path.dirname(torch.__file__), "include", ".ppu_compat"
+                )
                 ppu_arch = _ppu_arch_from_cuda_arch(current_arch)
                 ppu_compat_cmake = ""
                 if os.path.isdir(ppu_compat_dir):
