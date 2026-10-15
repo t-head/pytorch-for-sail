@@ -32,7 +32,7 @@ This project is a derivative work of PyTorch. The original PyTorch copyright and
 - **PyTorch API compatibility:** Preserves familiar tensor, autograd, neural network, and optimizer workflows.
 - **SAIL builds:** Converts device code with Sailify and compiles it with `hgcc`, then links against native T-Head SAIL SDK runtime and compute libraries.
 - **Attention operators:** Provides Zhenwu PPU-adapted SDPA, Flash Attention, and Memory-Efficient Attention backends.
-- **Distributed support:** Uses PCCL from the SAIL SDK for collective communication and adapts the Gloo and TensorPipe build paths.
+- **Distributed support:** Uses PCCL for collective communication and adapts the Gloo and TensorPipe build paths.
 - **Compilation optimization:** Supports `torch.compile` (Inductor backend) with T-Head SAIL-adapted Triton 3.6.0.
 
 ## Hardware Support
@@ -60,7 +60,7 @@ Build the T-Head SAIL wheel from source. If public binary packages or container 
 - Git, CMake 3.27 or later, Ninja, and the Python build dependencies in `requirements.txt`
 - All Git submodules initialized
 - [T-Head SAIL SDK](https://developer.t-head.cn/download/index.html) (`PPU_SDK`), installed at `/usr/local/PPU_SDK` by default
-- The `hgcc` compiler and PCCL libraries provided by the SDK environment
+- For SDK v2.2, a separately installed PCCL package that matches the SDK/runtime and operating system
 
 Initialize the source tree and dependencies:
 
@@ -70,30 +70,44 @@ git submodule update --init --recursive
 
 # Run the following commands inside the Docker container
 python3 -m pip install -r requirements.txt
-python3 -m pip install wheel
 ```
 
 ### Build from Source
 
 Build the T-Head SAIL wheel directly with `python3 setup.py bdist_wheel`. The primary switch for SAIL mode is `USE_SAIL=1`. Device code is compiled with `hgcc` and linked against native T-Head SAIL SDK libraries.
 
-#### Communication Library Paths
+#### SDK v2.2 and PCCL
 
-SAIL builds use native PCCL. By default, `setup.py` searches `$PPU_SDK/include` and `$PPU_SDK/lib`; set the following variables only to use a PCCL installation outside the SDK:
+Starting with T-Head SAIL SDK v2.2, PCCL is distributed separately from the SDK. Install the SDK for the `hgcc` compiler and device runtime, and install a matching PCCL package for distributed communication.
+
+Download PCCL from the [T-Head Developer Center](https://developer.t-head.cn/download/index.html). On the download page, select the package by all of the following attributes:
+
+- **Artifact type:** select the PCCL library package required by the build, rather than an unrelated tool package.
+- **Artifact version:** match the PCCL release required by the target SDK and project release.
+- **hggcrt version:** match the `hggcrt` generation used by the installed SDK, such as `hggcrt3`.
+- **Operating system:** match the target Linux distribution and version, such as Ubuntu 24.04.
+
+Select the appropriate PCCL package for your build requirements based on the artifact type, artifact version, `hggcrt` version, and operating system, and do not mix packages that are incompatible with the current environment.
+
+Install and initialize the independently distributed PCCL package as follows:
 
 ```bash
-export PCCL_INCLUDE_DIR=/path/to/include
-export PCCL_LIB_DIR=/path/to/lib
+# Replace the file name with the package selected for your environment.
+tar zxf pccl_hggcrt3_ubuntu2404-v2.2.0.tar.gz -C /usr/local
 
-test -f "$PCCL_INCLUDE_DIR/pccl.h"
-test -f "$PCCL_LIB_DIR/libpccl.so"
+source /usr/local/PPU_SDK/envsetup.sh
+source /usr/local/pccl/envsetup.sh release
+
+export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
+export PCCL_LIB_DIR="$PCCL_HOME/lib"
 ```
 
-`PCCL_INCLUDE_DIR` and `PCCL_LIB_DIR` are input directories. `PCCL_INCLUDE_DIRS` and `PCCL_LIBRARIES` are CMake results and must not be exported. After changing paths, remove the existing `build/` directory or use a fresh build directory to clear `CMakeCache.txt`.
+PCCL has different configuration requirements at build time and runtime:
 
-For CUDA-compat builds (`USE_SAIL` unset or `0`), configure `NCCL_INCLUDE_DIR` and `NCCL_LIB_DIR` instead.
+- **Build time:** When SDK v2.2 uses an external PCCL package, set `PCCL_INCLUDE_DIR` and `PCCL_LIB_DIR` after initializing the PCCL environment. The build system uses them to locate `pccl.h` and `libpccl.so`. These variables are not required for SDK v2.1 when using PCCL bundled with `PPU_SDK`.
+- **Runtime:** PCCL header paths are not needed, and neither `PCCL_INCLUDE_DIR` nor `PCCL_LIB_DIR` is read. However, the dynamic linker must be able to locate `libpccl.so`. Run `source /usr/local/pccl/envsetup.sh release` before using torch to configure the required `LD_LIBRARY_PATH`. This step may be omitted when an equivalent system library search path is already configured; otherwise, importing torch or using distributed features may fail because `libpccl.so` cannot be found.
 
-#### Option 1: In-place Conversion
+#### Build Option 1: In-place Conversion
 
 In-place conversion is the default mode and suits CI or disposable checkouts; without `SAILIFY_OUTPUT_DIR`, source conversion and wheel compilation complete in one invocation.
 
@@ -101,12 +115,20 @@ In-place conversion is the default mode and suits CI or disposable checkouts; wi
 cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
+# SDK v2.2 is the default: PCCL is distributed separately, so initialize it
+# and specify the external PCCL paths.
+source /usr/local/pccl/envsetup.sh release
+export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
+export PCCL_LIB_DIR="$PCCL_HOME/lib"
+# For SDK v2.1 with PCCL bundled in PPU_SDK, skip the three lines above.
+
 export USE_SAIL=1
+export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export BUILD_TEST=1
-export MAX_JOBS=32
+export MAX_JOBS=128
 
 # Release version; without these the wheel defaults to the development
 # version derived from version.txt (with a +git identifier).
@@ -119,20 +141,30 @@ python3 setup.py bdist_wheel
 
 > **Warning:** In-place conversion rewrites convertible sources in the current source tree and its `third_party` submodules. Do not use it in a development checkout with local changes that must be preserved.
 
-#### Option 2: Out-of-place Conversion
+#### Build Option 2: Out-of-place Conversion
 
 Use out-of-place conversion for local development. Sailify writes converted sources to a separate directory, leaving the original Git checkout unchanged. The workflow has two stages: source conversion and wheel compilation.
+
+Use the following out-of-place two-stage source build workflow:
 
 ```bash
 cd pytorch
 source /usr/local/PPU_SDK/envsetup.sh
 
+# SDK v2.2 is the default: PCCL is distributed separately, so initialize it
+# and specify the external PCCL paths.
+source /usr/local/pccl/envsetup.sh release
+export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
+export PCCL_LIB_DIR="$PCCL_HOME/lib"
+# For SDK v2.1 with PCCL bundled in PPU_SDK, skip the three lines above.
+
 export USE_SAIL=1
+export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
 export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export BUILD_TEST=1
-export MAX_JOBS=32
+export MAX_JOBS=128
 
 # Release version; without these the wheel defaults to the development
 # version derived from version.txt (with a +git identifier).
@@ -169,8 +201,8 @@ The `.sailify_done` marker in the converted tree prevents redundant conversion. 
 | `SAILIFY_FORCE` | `1` | Forces source regeneration; set only when needed |
 | `PYTORCH_SAIL_ARCH` | `ppu_10;ppu_15` | PPU target architecture list; defaults to `ppu_10;ppu_15`; see below |
 | `USE_PCCL` | `1` | Enables native PCCL communication for SAIL builds |
-| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/path/to/include` / `/path/to/lib` | Optional override for PCCL directories; defaults to `$PPU_SDK/include` and `$PPU_SDK/lib` |
-| `MAX_JOBS` | `32` | Maximum parallel jobs; adjust for available memory |
+| `PCCL_INCLUDE_DIR` / `PCCL_LIB_DIR` | `/usr/local/pccl/include` / `/usr/local/pccl/lib` | PCCL input directories; examples default to SDK v2.2 and point to the independent PCCL installation; SDK v2.1 needs no override when using PCCL bundled with `PPU_SDK` |
+| `MAX_JOBS` | `128` | Maximum number of parallel compile jobs |
 | `PYTORCH_VERSION` | `2.10.0` | Declares the wheel release version |
 | `PYTORCH_BUILD_VERSION` | `2.10.0` | Version used when building a release wheel; must be set together with `PYTORCH_BUILD_NUMBER` |
 | `PYTORCH_BUILD_NUMBER` | `0` | Build number; when set, the version no longer carries a `+git<commit>` local identifier |
