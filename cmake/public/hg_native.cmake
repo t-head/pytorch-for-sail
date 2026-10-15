@@ -256,38 +256,28 @@ message(STATUS "PyTorch: PPU toolkit directory: ${PPU_TOOLKIT_ROOT_DIR}")
 # is CMAKE_CURRENT_SOURCE_DIR here. A downstream find_package(Torch) instead
 # includes this file from <prefix>/share/cmake/Caffe2/public/, where
 # CMAKE_CURRENT_SOURCE_DIR is the *consumer's* directory and has no
-# .ppu_compat -- fall back to the copy shipped at the install prefix.
+# .ppu_compat -- fall back to the copy shipped at <prefix>/include/.ppu_compat.
 get_filename_component(_PPU_COMPAT_INSTALLED
-  "${CMAKE_CURRENT_LIST_DIR}/../../../../.ppu_compat" ABSOLUTE)
+  "${CMAKE_CURRENT_LIST_DIR}/../../../../include/.ppu_compat" ABSOLUTE)
+set(_PPU_COMPAT_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/.ppu_compat")
 set(_PPU_COMPAT_DIRS
-  "${CMAKE_CURRENT_SOURCE_DIR}/.ppu_compat"
+  "${_PPU_COMPAT_BUILD}"
   "${_PPU_COMPAT_INSTALLED}")
-set(_PPU_CUDA_COMPAT_WRAPPER "")
+set(_PPU_COMPAT_ROOT "")
 foreach(_dir IN LISTS _PPU_COMPAT_DIRS)
   foreach(_cand compatible_wrapper.h cuda_compat_wrapper.h)
     if(EXISTS "${_dir}/${_cand}")
-      set(_PPU_CUDA_COMPAT_WRAPPER "${_dir}/${_cand}")
+      get_filename_component(_PPU_COMPAT_ROOT "${_dir}/.." ABSOLUTE)
       break()
     endif()
   endforeach()
-  if(_PPU_CUDA_COMPAT_WRAPPER)
+  if(_PPU_COMPAT_ROOT)
     break()
   endif()
 endforeach()
-if(_PPU_CUDA_COMPAT_WRAPPER)
-  # Host-side .cpp compilation (for example c10/cuda/*.cpp) needs the wrapper
-  # even though those files are compiled by the host C++ compiler, not hgcc.
-  add_compile_options(
-    $<$<COMPILE_LANGUAGE:CXX>:-include>
-    $<$<COMPILE_LANGUAGE:CXX>:${_PPU_CUDA_COMPAT_WRAPPER}>)
-
-  # Device-side HG compilation also needs the same wrapper. De-duplicate here
-  # because build scripts may already seed CMAKE_HG_FLAGS.
-  string(FIND "${CMAKE_HG_FLAGS}" "${_PPU_CUDA_COMPAT_WRAPPER}" _ppu_compat_wrapper_in_hg_flags)
-  if(_ppu_compat_wrapper_in_hg_flags EQUAL -1)
-    string(APPEND CMAKE_HG_FLAGS " -include ${_PPU_CUDA_COMPAT_WRAPPER}")
-  endif()
-  message(STATUS "PPU SAIL compat wrapper: ${_PPU_CUDA_COMPAT_WRAPPER}")
+if(_PPU_COMPAT_ROOT)
+  include_directories(SYSTEM "${_PPU_COMPAT_ROOT}")
+  message(STATUS "PPU SAIL compat include root: ${_PPU_COMPAT_ROOT}")
 else()
   message(WARNING "PPU SAIL compat wrapper not found. Looked for "
     "compatible_wrapper.h / cuda_compat_wrapper.h under: ${_PPU_COMPAT_DIRS}")
@@ -297,7 +287,7 @@ endif()
 # (hgperf_host.h, hgperf_common.h, ppu_sdk_fixups.h, etc.) are discoverable
 # by all targets, including third-party (kineto, gloo, etc.). Same two
 # locations as the wrapper above: source root while building torch, install
-# prefix when a downstream find_package(Torch) pulls this file in.
+# include root when a downstream find_package(Torch) pulls this file in.
 set(_PPU_COMPAT_DIR "")
 foreach(_dir IN LISTS _PPU_COMPAT_DIRS)
   if(IS_DIRECTORY "${_dir}")
