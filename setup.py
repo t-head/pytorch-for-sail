@@ -1169,9 +1169,11 @@ class build_ext(setuptools.command.build_ext.build_ext):
             report(f"Wrapped header: {rel_path}")
 
     def _copy_ppu_compat_headers(self) -> None:
-        src, dst = CWD / ".ppu_compat", Path(self.build_lib) / "torch" / ".ppu_compat"
+        src = CWD / ".ppu_compat"
         if not src.is_dir():
             return
+        build_lib = Path(self.build_lib)
+        dst = build_lib / "torch" / "include" / ".ppu_compat"
         dst.mkdir(parents=True, exist_ok=True)
         for f in src.glob("*.h"):
             shutil.copy2(f, dst / f.name)
@@ -1343,9 +1345,6 @@ class build_ext(setuptools.command.build_ext.build_ext):
 
         super().run()
 
-        if str2bool(os.getenv("USE_SAIL")):
-            self._copy_ppu_compat_headers()
-
         # Wrap headers with TORCH_STABLE_ONLY and TORCH_TARGET_VERSION guards
         build_lib = Path(self.build_lib)
         build_torch_include_dir = build_lib / "torch" / "include"
@@ -1354,6 +1353,9 @@ class build_ext(setuptools.command.build_ext.build_ext):
                 "-- Wrapping header files with if !defined(TORCH_STABLE_ONLY) && !defined(TORCH_TARGET_VERSION)"
             )
             self._wrap_headers_with_macro(build_torch_include_dir)
+
+        if str2bool(os.getenv("USE_SAIL")):
+            self._copy_ppu_compat_headers()
 
         if IS_DARWIN:
             self._embed_libomp()
@@ -1622,7 +1624,7 @@ def configure_extension_build() -> tuple[
         excludes.extend(["functorch", "functorch.*"])
 
     # When USE_SAIL, vendor sailify under torch.sailify (like torch.utils.hipify).
-    # Runtime only needs .py files; compat headers are pre-built into torch/.ppu_compat/.
+    # Runtime only needs .py files; compat headers are pre-built into torch/include/.ppu_compat/.
     package_dir = {}
     sailify_packages = []
     if str2bool(os.getenv("USE_SAIL")):
@@ -2153,6 +2155,10 @@ def run_sailify_conversion() -> bool:
         output_directory="" if in_place else out_dir,
         extra_mapping=extra_mapping,
         ignores=ignores,
+        inject_compat_include=str2bool(os.getenv("SAILIFY_INJECT_COMPAT_INCLUDE", "1")),
+        inject_compat_include_ignores=[
+            "torch/csrc/inductor/aoti_torch/generated/**",
+        ],
         verbose=True,
     )
     n_ok = sum(1 for r in results.values() if r.status == "ok")
@@ -2526,7 +2532,7 @@ def main() -> None:
     }
     if str2bool(os.getenv("USE_SAIL")):
         torch_package_data += [
-            ".ppu_compat/*.h",
+            "include/.ppu_compat/*.h",
         ]
         # Compat templates/headers for JIT-time .ppu_compat generation.
         package_data["torch.sailify"] = [
