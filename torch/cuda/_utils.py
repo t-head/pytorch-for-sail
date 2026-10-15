@@ -192,6 +192,8 @@ def _get_nvrtc_library() -> ctypes.CDLL:
             "nvrtcCompileProgram": "hgrtcCompileProgram",
             "nvrtcGetPTXSize": "hgrtcGetCodeSize",
             "nvrtcGetPTX": "hgrtcGetCode",
+            "nvrtcGetCUBINSize": "hgrtcGetCodeSize",
+            "nvrtcGetCUBIN": "hgrtcGetCode",
             "nvrtcGetProgramLogSize": "hgrtcGetProgramLogSize",
             "nvrtcGetProgramLog": "hgrtcGetProgramLog",
             "nvrtcAddNameExpression": "hgrtcAddNameExpression",
@@ -252,6 +254,45 @@ def _get_gpu_rtc_compatible_flags() -> list[str]:
     return compatible_flags
 
 
+def _sailify_kernel_source(kernel_source: str, include_dirs: list | None = None) -> str:
+    import tempfile
+
+    from torch.sailify.sailify_python import sailify_extra_files_recursive
+
+    with tempfile.TemporaryDirectory(prefix="nvrtc_sailify_") as tmpdir:
+        src = os.path.join(tmpdir, "kernel.cu")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(kernel_source)
+        results = sailify_extra_files_recursive(
+            output_directory=tmpdir,
+            extra_files=[src],
+            header_include_dirs=[os.path.abspath(d) for d in include_dirs or []],
+            install_ppu_compat=False,
+        )
+        res = results.get(os.path.abspath(src))
+        out = res.ppuified_path if (res and res.ppuified_path) else src
+        with open(out, encoding="utf-8") as fh:
+            return fh.read()
+
+
+_sail_compat_dir: str | None = None
+
+
+def _get_sail_compat_dir() -> str:
+    global _sail_compat_dir
+    if _sail_compat_dir is None:
+        import tempfile
+
+        from torch.sailify.sailify_python import sailify_extra_files_recursive
+
+        base = tempfile.mkdtemp(prefix="nvrtc_sailify_compat_")
+        sailify_extra_files_recursive(
+            output_directory=base, extra_files=[], install_ppu_compat=True
+        )
+        _sail_compat_dir = os.path.join(base, ".ppu_compat")
+    return _sail_compat_dir
+
+
 def _nvrtc_compile(
     kernel_source: str,
     kernel_name: str,
@@ -297,6 +338,22 @@ def _nvrtc_compile(
             raise RuntimeError(f"CUDA error: {error_message}")
 
     # Convert source to bytes
+    if _is_sail_mode():
+        from torch.utils.cpp_extension import _extract_include_paths
+        # NVRTC long forms (--include-path=DIR / --include-path DIR) reach hgrtc
+        # but _extract_include_paths only parses -I; normalize a copy for
+        # extraction, the original options are still forwarded unchanged.
+        sailify_flags = []
+        for flag in nvcc_options or []:
+            if flag == "--include-path":
+                flag = "-I"
+            elif flag.startswith("--include-path="):
+                flag = "-I" + flag.split("=", 1)[1]
+            sailify_flags.append(flag)
+        sailify_include_dirs = _extract_include_paths(
+            sailify_flags, cuda_include_dirs
+        )
+        kernel_source = _sailify_kernel_source(kernel_source, sailify_include_dirs)
     source_bytes = kernel_source.encode("utf-8")
 
     # Get compute capability if not provided
@@ -337,6 +394,10 @@ def _nvrtc_compile(
     if cuda_include_dirs:
         for directory in cuda_include_dirs:
             options.append(f"-I{directory}".encode())
+
+    if _is_sail_mode():
+        options.append(f"-I{_get_sail_compat_dir()}".encode())
+        options.append(b"--pre-include=compatible_wrapper.h")
 
     # Enable automatic precompiled headers (CUDA 12.8+)
     if auto_pch:
