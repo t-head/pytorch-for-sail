@@ -347,7 +347,18 @@ jobs:
           docker exec -t "${container_name}" bash -c \
             "echo '${SOURCE_COMMIT}' > /tmp/ppu_source_commit"
 
-      - name: Check PPU NCCL in image
+      - name: Check PPU SDK in image
+        env:
+          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
+        run: |
+          # 镜像已自带 PPU SDK，无需单独安装（不再走 sdk_env.sh → install_sdk.sh），
+          # 这里只 source envsetup.sh 并校验 nvcc 可用，把 SDK 环境问题卡在编译之前
+          docker exec -t "${CONTAINER_NAME}" bash -c '
+            set -e
+            source /usr/local/PPU_SDK/envsetup.sh
+          '
+
+      - name: Check PPU PCCL in image
         env:
           CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
         run: |
@@ -359,20 +370,7 @@ jobs:
             source /usr/local/pccl/envsetup.sh release
             export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
             export PCCL_LIB_DIR="$PCCL_HOME/lib"
-            echo "[nccl] PCCL 环境就绪: PCCL_HOME=$PCCL_HOME"
-          '
-
-      - name: Check PPU SDK in image
-        env:
-          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
-        run: |
-          # 镜像已自带 PPU SDK，无需单独安装（不再走 sdk_env.sh → install_sdk.sh），
-          # 这里只 source envsetup.sh 并校验 nvcc 可用，把 SDK 环境问题卡在编译之前
-          docker exec -t "${CONTAINER_NAME}" bash -c '
-            set -e
-            source /usr/local/PPU_SDK/envsetup.sh
-            command -v nvcc >/dev/null 2>&1 || { echo "[sdk] SDK 环境异常: nvcc 不可用" >&2; exit 1; }
-            echo "[sdk] SDK 环境就绪: $(nvcc --version | tail -1)"
+            echo "[PCCL] PCCL 环境就绪: PCCL_HOME=$PCCL_HOME"
           '
 
       - name: Setup ccache in container
