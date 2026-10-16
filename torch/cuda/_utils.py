@@ -1,4 +1,6 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 import ctypes
+import os
 import sys
 from typing import Any
 
@@ -17,6 +19,40 @@ except ImportError:
 
 # The _get_device_index has been moved to torch.utils._get_device_index
 from torch._utils import _get_device_index as _torch_get_device_index
+
+
+def _is_sail_mode() -> bool:
+    # SAIL (PPU) mode is fixed at build time and recorded in
+    # torch.version.sail (non-None only for USE_SAIL builds), mirroring how
+    # torch.version.hip marks ROCm builds. Read the marker directly from the
+    # generated, dependency-free torch/version.py (which never imports torch);
+    # fall back to False when it is absent (e.g. an uncompiled source tree).
+    try:
+        from torch.version import sail as _sail
+    except Exception:
+        return False
+    return _sail is not None
+
+
+def _load_ppu_sdk_library(*names: str) -> ctypes.CDLL:
+    # `source $PPU_SDK/envsetup.sh ppu` puts the PPU SDK lib directory on
+    # LD_LIBRARY_PATH at runtime, so prefer bare-soname resolution via the
+    # dynamic loader. Only fall back to an explicit $PPU_SDK path if the loader
+    # cannot find the library (e.g. envsetup was not sourced). Never hardcode a
+    # fixed install prefix.
+    for name in names:
+        try:
+            return ctypes.CDLL(name)
+        except OSError:
+            continue
+    ppu_sdk = os.environ.get("PPU_SDK")
+    if ppu_sdk:
+        lib_dir = os.path.join(ppu_sdk, "targets", "x86_64-linux", "lib")
+        for name in names:
+            path = os.path.join(lib_dir, name)
+            if os.path.exists(path):
+                return ctypes.CDLL(path)
+    raise OSError(f"Could not find any PPU SDK library from {names}")
 
 
 def _get_hip_runtime_library() -> ctypes.CDLL:
@@ -46,6 +82,23 @@ def _get_cuda_library() -> ctypes.CDLL:
     if sys.platform == "win32":
         return ctypes.CDLL("nvcuda.dll")
     else:  # Unix-based systems
+        # sail only replaces the Linux .so path; the Windows DLL branch
+        # above stays exactly as upstream to minimize rebase conflicts.
+        if _is_sail_mode():
+            lib = _load_ppu_sdk_library("libhggc.so")
+            # Provide aliases for PPU driver functions to match CUDA driver API
+            # (same pattern as _get_hip_runtime_library for AMD/HIP)
+            _ppu_driver_aliases = {
+                'cuGetErrorString':    'hgGetErrorString',
+                'cuModuleLoadData':    'hgModuleLoadData',
+                'cuModuleGetFunction': 'hgModuleGetFunction',
+                'cuLaunchKernel':      'hgLaunchKernel',
+                'cuFuncSetAttribute':  'hgFuncSetAttribute',
+            }
+            for cu_name, hg_name in _ppu_driver_aliases.items():
+                if hasattr(lib, hg_name):
+                    setattr(lib, cu_name, getattr(lib, hg_name))
+            return lib
         return ctypes.CDLL("libcuda.so.1")
 
 
@@ -129,6 +182,26 @@ def _get_hiprtc_library() -> ctypes.CDLL:
 
 
 def _get_nvrtc_library() -> ctypes.CDLL:
+    # sail only replaces the Linux .so path; Windows DLLs are untouched.
+    if sys.platform != "win32" and _is_sail_mode():
+        lib = _load_ppu_sdk_library("libhgrtc.so")
+        aliases = {
+            "nvrtcGetErrorString": "hgrtcGetErrorString",
+            "nvrtcCreateProgram": "hgrtcCreateProgram",
+            "nvrtcDestroyProgram": "hgrtcDestroyProgram",
+            "nvrtcCompileProgram": "hgrtcCompileProgram",
+            "nvrtcGetPTXSize": "hgrtcGetCodeSize",
+            "nvrtcGetPTX": "hgrtcGetCode",
+            "nvrtcGetProgramLogSize": "hgrtcGetProgramLogSize",
+            "nvrtcGetProgramLog": "hgrtcGetProgramLog",
+            "nvrtcAddNameExpression": "hgrtcAddNameExpression",
+            "nvrtcGetLoweredName": "hgrtcGetLoweredName",
+        }
+        for nvrtc_name, hgrtc_name in aliases.items():
+            if hasattr(lib, hgrtc_name):
+                setattr(lib, nvrtc_name, getattr(lib, hgrtc_name))
+        return lib
+
     major_version = int(torch.version.cuda.split(".")[0])  # type: ignore[union-attr]
     if sys.platform == "win32":
         nvrtc_libs = [
@@ -136,8 +209,7 @@ def _get_nvrtc_library() -> ctypes.CDLL:
         ]
     else:
         nvrtc_libs = [
-            f"libnvrtc.so.{major_version}",
-            "libnvrtc.so",  # Fallback to unversioned
+            "libhgrtc.so",
         ]
     for lib_name in nvrtc_libs:
         try:
@@ -239,6 +311,18 @@ def _nvrtc_compile(
     options = []
     if torch.version.hip:
         options.append(f"--offload-arch={compute_capability}".encode())
+    elif _is_sail_mode():
+        # PPU: hgrtc expects --gpu-architecture=ppu_XX, not sm_XX
+        from torch.utils.cpp_extension import _cuda_arch_to_ppu
+        # compute_capability is like "80" or "90a"; strip 'a' suffix
+        # to parse major/minor, _cuda_arch_to_ppu also handles it defensively.
+        cc = compute_capability.rstrip('a')
+        if len(cc) >= 2:
+            major, minor = int(cc[:-1]), int(cc[-1])
+        else:
+            major, minor = 8, 0  # default fallback
+        ppu_arch = _cuda_arch_to_ppu(f"{major}.{minor}")
+        options.append(f"--gpu-architecture={ppu_arch}".encode())
     else:
         options.append(f"--gpu-architecture=sm_{compute_capability}".encode())
 
@@ -262,8 +346,11 @@ def _nvrtc_compile(
             nvcc_options = []
         nvcc_options.append("--pch")
 
-    # Add custom NVCC options
+    # Add custom NVCC options (sailify for PPU to convert arch flags)
     if nvcc_options:
+        if _is_sail_mode():
+            from torch.utils.cpp_extension import _sailify_nvcc_flags
+            nvcc_options = _sailify_nvcc_flags(nvcc_options)
         for option in nvcc_options:
             options.append(option.encode("utf-8"))
 

@@ -1,3 +1,4 @@
+// Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 /***************************************************************************************************
  * Copyright (c) 2017 - 2023 NVIDIA CORPORATION & AFFILIATES. All rights
  *reserved. SPDX-License-Identifier: BSD-3-Clause
@@ -100,6 +101,7 @@ struct DefaultWarpIteratorAFromSharedMemory<
           kWarpSize>;
 };
 
+#if !defined(USE_PPU)
 // TensorOp - Volta
 template <typename WarpShape, typename RegularWarpIterator, typename Policy>
 struct DefaultWarpIteratorAFromSharedMemory<
@@ -122,6 +124,7 @@ struct DefaultWarpIteratorAFromSharedMemory<
           OpDelta::kRow,
           kWarpSize>;
 };
+#endif // !defined(USE_PPU): PPU never selects the Volta warp iterator; fork removed MmaVolta* types
 
 // Simt
 template <typename WarpShape, typename RegularWarpIterator, typename Policy>

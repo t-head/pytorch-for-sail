@@ -2048,6 +2048,15 @@ if __name__ == '__main__':
         counted = t.bincount(minlength=65536)
         self.assertEqual(torch.sum(counted), 10)
 
+        # Cover the PPU 810/810E shared-memory boundary. The TSM CAS patch
+        # adds static TSM to this kernel, so these bin counts must launch and
+        # preserve every input element on both sides of the 32739-bin case.
+        for nbins in range(32737, 32742):
+            t = torch.randint(0, nbins, (5000,), device="cuda")
+            counts = torch.bincount(t, minlength=nbins)
+            self.assertEqual(counts.numel(), nbins)
+            self.assertEqual(counts.sum().item(), t.numel())
+
     def test_tiny_half_norm_(self):
         a = torch.arange(25).cuda().float()
         a /= 100000000
@@ -3339,7 +3348,10 @@ exit(2)
         torch.cuda.empty_cache()
 
         size = 1000
-        kSmallBuffer = 2097152
+        if torch.version.sail is not None:
+            kSmallBuffer = 8388608
+        else:
+            kSmallBuffer = 2097152
 
         def func_with_temps(t, val):
             x = t.clone() + val
@@ -3564,8 +3576,12 @@ exit(2)
     )
     def test_graph_memory_stats_and_use_result_after_destroy_graph(self):
         kSmallSize = 1048576
-        kSmallBuffer = 2097152
-        kLargeBuffer = 20971520
+        if torch.version.sail is not None:
+            kSmallBuffer = 8388608
+            kLargeBuffer = 33554432
+        else:
+            kSmallBuffer = 2097152
+            kLargeBuffer = 20971520
         kMinLargeAlloc = 10485760
         kRoundLarge = 2097152
 
@@ -6193,8 +6209,12 @@ print(f"{torch.cuda.device_count()}")
 
 MIN_BLOCK_SIZE = 512
 SMALL_SIZE = 1048576
-SMALL_BUFFER = 2097152
-LARGE_BUFFER = 20971520
+if torch.version.sail is not None:
+    SMALL_BUFFER = 8388608
+    LARGE_BUFFER = 33554432
+else:
+    SMALL_BUFFER = 2097152
+    LARGE_BUFFER = 20971520
 
 
 def get_cudagraph_segments(pool_id):

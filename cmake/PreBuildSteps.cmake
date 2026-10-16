@@ -88,9 +88,9 @@ if(NOT DEFINED USE_SYSTEM_LIBS OR NOT USE_SYSTEM_LIBS)
 endif()
 
 # --- NCCL checkout ---
-# Clone NCCL from the pinned tag if building with NCCL and not using
-# system NCCL.  Conditions match build_pytorch_libs.py::build_pytorch().
-if(NOT USE_SYSTEM_NCCL)
+# SAIL routes distributed communication to native PCCL and never needs the
+# bundled NCCL source. Non-SAIL builds retain the upstream checkout behavior.
+if(NOT USE_SAIL AND NOT USE_SYSTEM_NCCL)
   # Only attempt if USE_DISTRIBUTED, USE_CUDA, USE_NCCL are not explicitly OFF.
   set(_skip_nccl FALSE)
   foreach(_var USE_DISTRIBUTED USE_CUDA USE_NCCL)
