@@ -5,8 +5,8 @@ on:
     inputs:
       board:
         description: |
-          板型：810 或 890。它单手决定目标架构（810 → 8.0，890 → 8.9），
-          并作为后缀拼在 build-environment 后面进 cache key / artifact 名
+          板型：810 或 890。
+          作为后缀拼在 build-environment 后面进 cache key / artifact 名
         type: string
         required: true
       build-environment:
@@ -103,7 +103,6 @@ jobs:
     env:
       BUILD_ENVIRONMENT: ${{ inputs.build-environment }}-${{ inputs.board }}
       DOCKER_IMAGE: ${{ inputs.docker-image }}
-      TORCH_CUDA_ARCH_LIST: ${{ inputs.board == '810' && '8.0' || '8.9' }}
       MAX_JOBS: ${{ inputs.max-jobs }}
       PPU_MEM_PER_JOB_GB: ${{ inputs.mem-per-job-gb }}
       PPU_LINK_JOBS: ${{ inputs.link-jobs }}
@@ -119,10 +118,10 @@ jobs:
         env:
           BOARD: ${{ inputs.board }}
         run: |
-          # board 同时决定 arch 与 cache key 后缀，拼错一个字符就是一次 4~5h 的无效编译，
+          # board 决定 cache key 后缀，拼错一个字符就是一次 4~5h 的无效编译，
           # 所以卡在第一步而不是靠 job env 里的三元表达式静默归一
           case "${BOARD}" in
-            810|890) echo "[board] board=${BOARD} arch=${TORCH_CUDA_ARCH_LIST} env=${BUILD_ENVIRONMENT}" ;;
+            810|890) echo "[board] board=${BOARD} env=${BUILD_ENVIRONMENT}" ;;
             *) echo "::error::board 只能是 810 或 890，当前为 '${BOARD}'"; exit 1 ;;
           esac
 
@@ -171,10 +170,10 @@ jobs:
           CACHE_BRANCH: ${{ inputs.cache-branch || github.event.pull_request.base.ref || github.ref_name }}
         run: |
           branch_slug=$(printf '%s' "${CACHE_BRANCH}" | tr -c '[:alnum:]._-' '-')
-          # 指纹只盖「镜像 + 目标架构」：只有这两项变了才会让旧条目整体失效（编译器与
+          # 指纹只盖「镜像」：只有镜像变了才会让旧条目整体失效（编译器与
           # 编译参数变了）。不能把 .ci/ppu/*.sh 的哈希算进来 —— 改个日志就丢掉整份缓存
           fingerprint=$(
-            printf '%s\n%s\n' "${DOCKER_IMAGE}" "${TORCH_CUDA_ARCH_LIST}" | sha256sum | cut -c1-12
+            printf '%s\n' "${DOCKER_IMAGE}" | sha256sum | cut -c1-12
           )
           prefix="ppu-ccache-${BUILD_ENVIRONMENT}-${branch_slug}-${fingerprint}-"
           echo "restore-prefix=${prefix}" >> "$GITHUB_OUTPUT"
@@ -301,7 +300,6 @@ jobs:
             --entrypoint /bin/bash \
             -e REPO_DIR="${REPO_DIR_IN_CONTAINER}" \
             -e BUILD_ENVIRONMENT \
-            -e TORCH_CUDA_ARCH_LIST \
             -e MAX_JOBS \
             -e SDK_INSTALL_DIR \
             -e PIP_INDEX_URL \
@@ -462,7 +460,6 @@ jobs:
             echo "### PPU build 产物"
             echo ""
             echo "- 镜像: \`${DOCKER_IMAGE}\`"
-            echo "- 架构: \`${TORCH_CUDA_ARCH_LIST}\`"
             echo "- 基线 commit: \`${SOURCE_COMMIT}\`"
             echo "- 缓存分支: \`${CACHE_BRANCH}\`（回写: \`${SAVE_CCACHE}\`）"
             echo "- ccache 缓存: \`${MATCHED_KEY:-未命中（冷编译）}\`"
