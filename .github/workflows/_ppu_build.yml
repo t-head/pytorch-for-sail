@@ -358,11 +358,8 @@ jobs:
               sleep 30
             done ) &
           sampler_pid=$!
-          # shellcheck disable=SC2064  # 需要在设置时就绑定当前 pid
           trap "kill ${sampler_pid} 2>/dev/null || true" EXIT
 
-          # build_wheel.sh 用到 bash 数组，必须用 bash 执行；
-          # 这里要自己接退出码，才能在 137 时给出可操作的提示
           set +e
           docker exec -t "${CONTAINER_NAME}" bash .ci/ppu/build_wheel.sh
           rc=$?
@@ -378,8 +375,6 @@ jobs:
             exit "${rc}"
           fi
 
-          # 编译耗时由脚本写入容器内 /tmp；命中 stamp 复用时该文件不存在
-          # 这里不能加 -t：伪 TTY 会往输出里插 \r，污染 GITHUB_OUTPUT
           if docker exec "${CONTAINER_NAME}" test -f /tmp/ppu_build_duration_sec; then
             duration=$(docker exec "${CONTAINER_NAME}" cat /tmp/ppu_build_duration_sec | tr -d '\r\n')
             echo "build-time-sec=${duration}" >> "$GITHUB_OUTPUT"

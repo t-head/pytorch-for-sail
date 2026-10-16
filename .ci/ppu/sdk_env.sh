@@ -27,11 +27,3 @@ fi
 
 set +u
 source "$ENVSETUP"
-set -u
-
-if ! command -v nvcc >/dev/null 2>&1; then
-    echo "[sdk_env] SDK 环境异常: nvcc 不可用" >&2
-    exit 1
-fi
-
-echo "[sdk_env] SDK 环境就绪: $(nvcc --version | tail -1)"
