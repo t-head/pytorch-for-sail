@@ -157,18 +157,6 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: 重试前等待 (checkout 2)
-        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
-        run: sleep 15
-
-      - name: Checkout PyTorch (重试 2)
-        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source-ref || github.event.pull_request.head.sha || github.sha }}
-          submodules: recursive
-          fetch-depth: 1
-
       - name: Record source baseline commit
         id: source-commit
         run: |
@@ -182,8 +170,6 @@ jobs:
         env:
           CACHE_BRANCH: ${{ inputs.cache-branch || github.event.pull_request.base.ref || github.ref_name }}
         run: |
-          # 缓存键不允许逗号，分支名里的其它字符统一折成 -。
-          # 每个分支一个独立前缀：v2.11.0 与 v2.10.0 的基线互不覆盖
           branch_slug=$(printf '%s' "${CACHE_BRANCH}" | tr -c '[:alnum:]._-' '-')
           # 指纹只盖「镜像 + 目标架构」：只有这两项变了才会让旧条目整体失效（编译器与
           # 编译参数变了）。不能把 .ci/ppu/*.sh 的哈希算进来 —— 改个日志就丢掉整份缓存
@@ -199,8 +185,6 @@ jobs:
 
       - name: Free disk space
         run: |
-          # larger runner 自带 300GB+ SSD，通常直接命中下方 ≥150GB 分支跳过清理；
-          # 保留清理逻辑仅作为磁盘异常缩水时的兜底。
           avail_gb=$(df -Pk / | awk 'NR==2 {print int($4 / 1024 / 1024)}')
           echo "[disk] 根分区可用 ${avail_gb}GB"
           if [[ "${avail_gb}" -ge 150 ]]; then
@@ -346,32 +330,6 @@ jobs:
           # build_wheel.sh 优先读该文件作为 stamp 键
           docker exec -t "${container_name}" bash -c \
             "echo '${SOURCE_COMMIT}' > /tmp/ppu_source_commit"
-
-      - name: Check PPU SDK in image
-        env:
-          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
-        run: |
-          # 镜像已自带 PPU SDK，无需单独安装（不再走 sdk_env.sh → install_sdk.sh），
-          # 这里只 source envsetup.sh 并校验 nvcc 可用，把 SDK 环境问题卡在编译之前
-          docker exec -t "${CONTAINER_NAME}" bash -c '
-            set -e
-            source /usr/local/PPU_SDK/envsetup.sh
-          '
-
-      - name: Check PPU PCCL in image
-        env:
-          CONTAINER_NAME: ${{ steps.container.outputs.container-name }}
-        run: |
-          # 下载并解压 PCCL 到 /usr/local，再 source envsetup.sh release 导出 include/lib 路径
-          docker exec -t "${CONTAINER_NAME}" bash -c '
-            set -e
-            wget https://download.t-head.cn/artifactory/ptgai-generic-release/COMM/v2.2.0/pccl_hggcrt3_ubuntu2404-v2.2.0.tar.gz
-            tar xf pccl_hggcrt3_ubuntu2404-v2.2.0.tar.gz -C /usr/local/
-            source /usr/local/pccl/envsetup.sh release
-            export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
-            export PCCL_LIB_DIR="$PCCL_HOME/lib"
-            echo "[PCCL] PCCL 环境就绪: PCCL_HOME=$PCCL_HOME"
-          '
 
       - name: Setup ccache in container
         env:

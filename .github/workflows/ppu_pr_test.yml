@@ -1,13 +1,5 @@
 name: ppu-pr-test
 
-# 仅用于测试 _ppu_build.yml 在 PR 上的效果：这是一个薄调用方，本身不做任何编译逻辑，
-# 全部参数透传给 reusable workflow。测试完成后删除本文件即可，_ppu_build.yml 无需改动。
-#
-# 为什么不直接给 _ppu_build.yml 加 pull_request 触发：
-#   reusable workflow 被 PR 直接触发时 inputs.* 全为空，且 workflow_call.inputs 的默认值
-#   不生效，会导致 Validate board 失败、TORCH_CUDA_ARCH_LIST 变空。要修就得给十几处
-#   inputs.X 全部补默认值，改动大且易错。用调用方传参是官方推荐做法。
-
 on:
   pull_request:
     paths:
@@ -30,8 +22,5 @@ jobs:
     with:
       board: "890"
       upload-wheel: true
-      # 注意：PR run 写出的缓存条目归 refs/pull/<N>/merge 作用域，别的 PR 读不到，
-      # 且可能按 LRU 挤掉共享基线。这里按测试需求开启回写，正式基线仍由
-      # ppu_refresh_cache.yml 独家维护。
       save-ccache: true
       timeout-minutes: 400
