@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 # This file used to build libtorch.so.
 # Now it only builds the Torch python bindings.
 
@@ -389,9 +390,19 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/autograd/python_variable.cpp PROPERTIES COMPILE_FLAGS "-Wno-cast-function-type")
 endif()
 
-# Preserve CUDA_GENCODE flags
-if(USE_CUDA)
+# Preserve build architectures for cpp_extension JIT defaults. SAIL wheels
+# record native PPU targets, while CUDA wheels retain their gencode flags.
+if(USE_SAIL)
+  if(DEFINED PYTORCH_SAIL_ARCH AND NOT PYTORCH_SAIL_ARCH STREQUAL "")
+    set(_PYTORCH_SAIL_ARCH "${PYTORCH_SAIL_ARCH}")
+  else()
+    set(_PYTORCH_SAIL_ARCH "$ENV{PYTORCH_SAIL_ARCH}")
+  endif()
+  string(REPLACE ";" " " PYTORCH_SAIL_ARCH_readable "${_PYTORCH_SAIL_ARCH}")
+  set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${PYTORCH_SAIL_ARCH_readable}\"")
+elseif(USE_CUDA)
   torch_cuda_get_nvcc_gencode_flag(_ARCH_FLAGS)
+  string(REPLACE ";" " " _ARCH_FLAGS_readable "${_ARCH_FLAGS}")
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${_ARCH_FLAGS_readable}\"")
 endif()
 
@@ -482,6 +493,50 @@ if(CUDAToolkit_VERSION_MAJOR)
   set(CUDA_VERSION "${CUDAToolkit_VERSION_MAJOR}.${CUDAToolkit_VERSION_MINOR}")
 endif()
 
+# PPU: expose torch.version.sail so runtime code can distinguish SAIL
+# (native PPU SDK / sailify) from CUDA-compatible and NVIDIA builds -- this
+# mirrors torch.version.hip for ROCm. Note torch.version.cuda is NOT usable for
+# this: in SAIL mode ppu_native.cmake maps CUDA_VERSION to the PPU toolkit
+# version, so cuda is non-None in BOTH PPU modes. SAIL_VERSION is populated ONLY
+# when USE_SAIL is ON; otherwise it stays empty -> torch.version.sail is None.
+#
+# The value is the PPU SDK release version read from <PPU_SDK>/release.yaml
+# (a line like "version: 1.7.0-84b81c" -> "1.7.0-84b81c"). If that file is
+# missing or has no version line, it defaults to "0.0.1". No real SDK version is
+# hardcoded here.
+set(SAIL_VERSION "")
+if(USE_SAIL)
+  # Resolve the PPU SDK root with the same precedence as ppu_native.cmake.
+  if(DEFINED ENV{PPU_SDK})
+    set(_ppu_sdk_root "$ENV{PPU_SDK}")
+  elseif(DEFINED ENV{PPU_HOME})
+    set(_ppu_sdk_root "$ENV{PPU_HOME}")
+  else()
+    set(_ppu_sdk_root "/usr/local/PPU_SDK")
+  endif()
+  set(_ppu_release_yaml "${_ppu_sdk_root}/release.yaml")
+  if(EXISTS "${_ppu_release_yaml}")
+    # file(STRINGS) yields newline-stripped lines; take the value after "version:".
+    file(STRINGS "${_ppu_release_yaml}" _ppu_release_lines)
+    foreach(_ppu_line IN LISTS _ppu_release_lines)
+      if(_ppu_line MATCHES "^[ \t]*version:[ \t]*(.+)$")
+        string(STRIP "${CMAKE_MATCH_1}" SAIL_VERSION)
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(SAIL_VERSION STREQUAL "")
+    message(FATAL_ERROR
+      "SAIL_VERSION is empty — PPU SDK installation may be incomplete or "
+      "the SDK path is incorrect.\n"
+      "  Checked: ${_ppu_release_yaml}\n"
+      "  PPU_SDK root: ${_ppu_sdk_root}\n"
+      "Please verify that <PPU_SDK>/release.yaml exists and contains a "
+      "'version: X.Y.Z' line.")
+  endif()
+  message(STATUS "torch.version.sail = ${SAIL_VERSION} (from ${_ppu_release_yaml})")
+endif()
+
 add_custom_target(
   gen_torch_version ALL
   "${Python_EXECUTABLE}" -m tools.generate_torch_version
@@ -490,6 +545,7 @@ add_custom_target(
     --hip-version=${HIP_VERSION_CLEAN}
     --rocm-version=${ROCM_VERSION_DEV}
     --xpu-version=${SYCL_COMPILER_VERSION}
+    --sail-version=${SAIL_VERSION}
   BYPRODUCTS ${TORCH_SRC_DIR}/version.py
   COMMENT "Regenerating version file..."
   WORKING_DIRECTORY ${TORCH_ROOT}

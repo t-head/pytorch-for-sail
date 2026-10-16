@@ -497,7 +497,7 @@ try:
     import torchvision  # noqa: F401
 
     HAS_TORCHVISION = True
-except ImportError:
+except (ImportError, RuntimeError):
     HAS_TORCHVISION = False
 skip_if_no_torchvision = unittest.skipIf(not HAS_TORCHVISION, "no torchvision")
 

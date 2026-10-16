@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 ################################################################################################
 # Exclude and prepend functionalities
 function(exclude OUTPUT INPUT)
@@ -305,30 +306,64 @@ macro(torch_xpu_get_arch_list store_var)
 endmacro()
 
 ##############################################################################
+# Get the PPU (hgcc) arch flags for SAIL builds.
+# SAIL accepts native PPU architecture names from PYTORCH_SAIL_ARCH. The
+# ppu_select_hgcc_arch_flags function in hg_native.cmake validates the values.
+# Usage:
+#   torch_ppu_get_nvcc_gencode_flag(variable_to_store_flags)
+#
+macro(torch_ppu_get_nvcc_gencode_flag store_var)
+  if((DEFINED TORCH_CUDA_ARCH_LIST AND NOT TORCH_CUDA_ARCH_LIST STREQUAL "")
+     OR (DEFINED ENV{TORCH_CUDA_ARCH_LIST} AND NOT "$ENV{TORCH_CUDA_ARCH_LIST}" STREQUAL ""))
+    message(FATAL_ERROR
+      "PPU SAIL: TORCH_CUDA_ARCH_LIST is not supported. Unset it and configure "
+      "PYTORCH_SAIL_ARCH with ppu_10, ppu_15, or both.")
+  endif()
+
+  if(DEFINED PYTORCH_SAIL_ARCH AND NOT PYTORCH_SAIL_ARCH STREQUAL "")
+    message(STATUS "PPU SAIL: using PYTORCH_SAIL_ARCH='${PYTORCH_SAIL_ARCH}'")
+  elseif(DEFINED ENV{PYTORCH_SAIL_ARCH} AND NOT "$ENV{PYTORCH_SAIL_ARCH}" STREQUAL "")
+    set(PYTORCH_SAIL_ARCH "$ENV{PYTORCH_SAIL_ARCH}")
+    message(STATUS "PPU SAIL: using PYTORCH_SAIL_ARCH='${PYTORCH_SAIL_ARCH}'")
+  else()
+    message(FATAL_ERROR
+      "PPU SAIL: PYTORCH_SAIL_ARCH is required. Set it to ppu_10, ppu_15, "
+      "or a semicolon-separated list of both.")
+  endif()
+
+  ppu_select_hgcc_arch_flags(${store_var})
+endmacro()
+
+##############################################################################
 # Get the NVCC arch flags specified by TORCH_CUDA_ARCH_LIST and CUDA_ARCH_NAME.
+# In SAIL mode, redirects to torch_ppu_get_nvcc_gencode_flag.
 # Usage:
 #   torch_cuda_get_nvcc_gencode_flag(variable_to_store_flags)
 #
 macro(torch_cuda_get_nvcc_gencode_flag store_var)
-  # setting nvcc arch flags
-  # We need to support the explicitly and conveniently defined TORCH_CUDA_ARCH_LIST
-  if((NOT DEFINED TORCH_CUDA_ARCH_LIST) AND (DEFINED ENV{TORCH_CUDA_ARCH_LIST}))
-    set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
-  endif()
-  if(DEFINED CUDA_ARCH_NAME)
-    message(WARNING
-        "CUDA_ARCH_NAME is no longer used. Use TORCH_CUDA_ARCH_LIST instead. "
-        "Right now, CUDA_ARCH_NAME is ${CUDA_ARCH_NAME} and "
-        "TORCH_CUDA_ARCH_LIST is ${TORCH_CUDA_ARCH_LIST}.")
-    if(NOT TORCH_CUDA_ARCH_LIST)
-      set(TORCH_CUDA_ARCH_LIST ${CUDA_ARCH_NAME})
-    else()
-      list(APPEND TORCH_CUDA_ARCH_LIST ${CUDA_ARCH_NAME})
+  if(USE_SAIL)
+    # PPU SAIL: redirect to PPU arch flags
+    torch_ppu_get_nvcc_gencode_flag(${store_var})
+  else()
+    # Original CUDA path
+    if((NOT DEFINED TORCH_CUDA_ARCH_LIST) AND (DEFINED ENV{TORCH_CUDA_ARCH_LIST}))
+      set(TORCH_CUDA_ARCH_LIST $ENV{TORCH_CUDA_ARCH_LIST})
     endif()
-  endif()
+    if(DEFINED CUDA_ARCH_NAME)
+      message(WARNING
+          "CUDA_ARCH_NAME is no longer used. Use TORCH_CUDA_ARCH_LIST instead. "
+          "Right now, CUDA_ARCH_NAME is ${CUDA_ARCH_NAME} and "
+          "TORCH_CUDA_ARCH_LIST is ${TORCH_CUDA_ARCH_LIST}.")
+      if(NOT TORCH_CUDA_ARCH_LIST)
+        set(TORCH_CUDA_ARCH_LIST ${CUDA_ARCH_NAME})
+      else()
+        list(APPEND TORCH_CUDA_ARCH_LIST ${CUDA_ARCH_NAME})
+      endif()
+    endif()
 
-  # Invoke cuda_select_nvcc_arch_flags from proper cmake FindCUDA.
-  cuda_select_nvcc_arch_flags(${store_var} ${TORCH_CUDA_ARCH_LIST})
+    # Invoke cuda_select_nvcc_arch_flags from proper cmake FindCUDA.
+    cuda_select_nvcc_arch_flags(${store_var} ${TORCH_CUDA_ARCH_LIST})
+  endif()
 endmacro()
 
 

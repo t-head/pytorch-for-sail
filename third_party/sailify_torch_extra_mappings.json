@@ -1,0 +1,13 @@
+[
+    ["NVRTC_STUB2(compatiblertcVersion, int*, int*)",
+     "hgrtcResult compatiblertcVersion(int* major, int* minor) { return ::compatiblertcVersion(major, minor); }"],
+    ["NO_ROCM(::cuda)", "NO_ROCM(::hggc)"],
+    ["cudaGraphNodeTypeConditional", "hggcGraphNodeTypeConditional"],
+    ["cudaGraphCondTypeIf", "hggcGraphCondTypeIf"],
+    ["cudaStreamSetCaptureDependencies", "hggcStreamSetCaptureDependencies"],
+    ["cuGreenCtxStreamCreate_", "hgGreenCtxStreamCreate_"],
+    ["cuMemGetAddressRange_", "hgMemGetAddressRange_"],
+    ["__nv_cvt_float_to_fp8", "__hg_cvt_float_to_fp8"],
+    ["__nv_cvt_halfraw_to_fp8", "__hg_cvt_halfraw_to_fp8"],
+    ["__nv_cvt_bfloat16raw_to_fp8", "__hg_cvt_bfloat16raw_to_fp8"]
+]

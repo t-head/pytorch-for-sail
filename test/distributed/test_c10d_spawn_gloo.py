@@ -76,12 +76,18 @@ class DistributedDataParallelSingleProcessTest(TestCase):
         self._test_base(nn.Linear(2, 2), [torch.randn(30, 2)])
 
     @requires_gloo()
-    @skip_but_pass_in_sandcastle_if(not TEST_CUDA, "At least 1 CUDA GPUS needed")
+    @skip_but_pass_in_sandcastle_if(
+        not TEST_CUDA or torch.version.sail is not None,
+        "requires native CUDA rather than the SAIL compatibility device",
+    )
     def test_cuda(self):
         self._test_base(nn.Linear(2, 2).to(0), [torch.randn(30, 2).to(0)])
 
     @requires_gloo()
-    @skip_but_pass_in_sandcastle_if(not TEST_CUDA, "At least 1 CUDA GPUS needed")
+    @skip_but_pass_in_sandcastle_if(
+        not TEST_CUDA or torch.version.sail is not None,
+        "requires native CUDA rather than the SAIL compatibility device",
+    )
     def test_rnn(self):
         # This test is inspired by the bug reported in
         # https://github.com/pytorch/pytorch/issues/36268

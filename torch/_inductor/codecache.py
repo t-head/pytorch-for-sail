@@ -1,3 +1,4 @@
+# Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
 from __future__ import annotations
 
 import base64
@@ -3228,8 +3229,13 @@ end
 
                     current_arch = cuda_compile_utils._nvcc_arch_as_compile_option()
                     nvcc = cuda_compile_utils._cuda_compiler()
-                    fatbinary = shutil.which("fatbinary")
-                    if nvcc is not None and (nvcc_dir := os.path.dirname(nvcc)):
+                    is_sail = torch.version.sail is not None
+                    fatbinary = None if is_sail else shutil.which("fatbinary")
+                    if (
+                        not is_sail
+                        and nvcc is not None
+                        and (nvcc_dir := os.path.dirname(nvcc))
+                    ):
                         candidate = os.path.join(nvcc_dir, "fatbinary")
                         if os.path.exists(candidate):
                             fatbinary = candidate
@@ -3254,18 +3260,31 @@ end
                             ]
                         else:
                             if nvcc is None:
-                                raise RuntimeError("nvcc is required to build fatbin")
-                            cmd = [
-                                *shlex.split(nvcc),
-                                "-fatbin",
-                                asm_f,
-                                "-o",
-                                cubin_f,
-                                "-gencode",
-                                f"arch=compute_{current_arch},code=compute_{current_arch}",
-                                "-gencode",
-                                f"arch=compute_{current_arch},code=sm_{current_arch}",
-                            ]
+                                raise RuntimeError("CUDA/PPU compiler is required to build fatbin")
+                            if is_sail:
+                                cmd = [
+                                    *shlex.split(nvcc),
+                                    "--fatbin",
+                                    asm_f,
+                                    "-o",
+                                    cubin_f,
+                                    "--gpu-architecture="
+                                    + cuda_compile_utils._ppu_arch_from_cuda_arch(
+                                        current_arch
+                                    ),
+                                ]
+                            else:
+                                cmd = [
+                                    *shlex.split(nvcc),
+                                    "-fatbin",
+                                    asm_f,
+                                    "-o",
+                                    cubin_f,
+                                    "-gencode",
+                                    f"arch=compute_{current_arch},code=compute_{current_arch}",
+                                    "-gencode",
+                                    f"arch=compute_{current_arch},code=sm_{current_arch}",
+                                ]
                         try:
                             subprocess.run(
                                 cmd, capture_output=True, text=True, check=True

@@ -51,7 +51,7 @@ try:
     import torchvision
 
     HAS_TORCHVISION = True
-except ImportError:
+except (ImportError, RuntimeError):
     HAS_TORCHVISION = False
 
 skipIfNoTorchVision = skip_but_pass_in_sandcastle_if(

@@ -1,7 +1,6 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <cstdint>
 #include <type_traits>
-
 #include <ATen/core/Tensor.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/Dispatch.h>
@@ -81,10 +80,15 @@
 #endif
 #ifdef USE_MEM_EFF_ATTENTION
 #ifndef USE_ROCM
+
+// copied from kernel_forward.h to support rand kernel
+#include <ATen/cuda/PhiloxUtils.cuh>
+#include <curand_kernel.h>
 // MemoryEfficient Attention Specific Imports for CUDA
-#include <ATen/native/transformers/cuda/mem_eff_attention/kernel_forward.h>
-#include <ATen/native/transformers/cuda/mem_eff_attention/kernels/cutlassF.h>
-#include <ATen/native/transformers/cuda/mem_eff_attention/pytorch_utils.h>
+#ifdef USE_PPU
+#include <xformers/csrc/attention/cuda/fmha/mem_eff_api.h>
+#include <ATen/native/transformers/cuda/mem_eff_attention/mem_eff_api.h>
+#endif // USE_PPU
 #else
 // MemoryEfficient Attention Specific Imports for ROCM
 #include <ATen/native/transformers/hip/gemm_kernel_utils.h>
@@ -97,7 +101,10 @@
 #endif
 #endif
 
-#if defined(USE_ROCM) && defined(USE_FLASH_ATTENTION)
+#include <cuda_runtime.h>
+#include <cuda.h>
+
+#if defined(USE_ROCM) && (defined(USE_FLASH_ATTENTION) || defined(USE_MEM_EFF_ATTENTION))
 namespace pytorch_flash
 {
 std::tuple<
@@ -188,6 +195,15 @@ namespace native {
 
 namespace {
 
+std::string getDeviceArchitecture() {
+    int deviceID = 0;
+    cudaError_t err = cudaGetDevice(&deviceID);
+    TORCH_CHECK(err == cudaSuccess, "Error getting current device ID: ", cudaGetErrorString(err));
+    cudaDeviceProp prop;
+    err = cudaGetDeviceProperties(&prop, deviceID);
+    TORCH_CHECK(err == cudaSuccess, "Error getting device properties: ", cudaGetErrorString(err));
+    return std::to_string(prop.major) + "." + std::to_string(prop.minor);
+}
 
 static constexpr int TRANSFORM_BIAS_RESCALE_VEC = 4;
 
@@ -1408,153 +1424,53 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
     const std::optional<at::Tensor>& seqlen_k,
     const std::optional<int64_t> window_size) {
 #if defined(USE_MEM_EFF_ATTENTION)
-// TODO In theory it is possible to compile with _CUDA_ARCH < 5.0 and run on a
-// machine that is >= 5.0. In practice, this is not a problem but since
-// this would avoid runtime architecture checks, we should look into it
-
-  TORCH_CHECK(query.dim() == 4);
-  TORCH_CHECK(key.dim() == 4);
-  TORCH_CHECK(value.dim() == 4);
-
-  // Batch sizes
-  TORCH_CHECK(query.size(0) == key.size(0));
-  TORCH_CHECK(query.size(0) == value.size(0));
-
-  // Sequence length
-  TORCH_CHECK(key.size(1) == value.size(1));
-
-  // Num heads
-  TORCH_CHECK(query.size(2) == key.size(2));
-  TORCH_CHECK(query.size(2) == value.size(2));
-
-  // Embedding per head
-  TORCH_CHECK(query.size(3) == key.size(3));
-
-  int64_t max_seqlen_q = 0, max_seqlen_k = 0;
-  TORCH_CHECK(seqstart_q.has_value() == seqstart_k.has_value());
-  if (seqstart_q.has_value()) {
-    TORCH_CHECK(seqstart_q->scalar_type() == at::ScalarType::Int);
-    TORCH_CHECK(seqstart_k->scalar_type() == at::ScalarType::Int);
-    TORCH_CHECK(seqstart_q->dim() == 1 && seqstart_k->dim() == 1);
-    CHECK_NOSPARSE_CONTIGUOUS_CUDA((*seqstart_q));
-    CHECK_NOSPARSE_CONTIGUOUS_CUDA((*seqstart_k));
-    TORCH_CHECK(seqstart_q->size(0) == seqstart_k->size(0));
-    TORCH_CHECK(query.size(0) == 1, "cu_seqlen only supports batch_size=1");
-    TORCH_CHECK(max_seqlen_q_.has_value());
-    max_seqlen_q = *max_seqlen_q_;
-    max_seqlen_k = 0; // TODO: is this actually being set inside the kernel anywhere?
-                      // see https://github.com/pytorch/pytorch/issues/115590s
-  } else {
-    max_seqlen_q = query.size(1);
-    max_seqlen_k = key.size(1);
-  }
-
-  CHECK_NOSPARSE_LASTCONTIGUOUS_CUDA(query);
-  CHECK_NOSPARSE_LASTCONTIGUOUS_CUDA(key);
-  CHECK_NOSPARSE_LASTCONTIGUOUS_CUDA(value);
-
-  at::cuda::CUDAGuard device_guard(query.device());
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
-  int64_t B = query.size(0);
-  int64_t M = query.size(1);
-  int64_t N = key.size(1);
-  int64_t num_heads = query.size(-2);
-  int64_t K = query.size(-1);
-  int64_t Kv = value.size(-1);
-
-  at::Tensor res;
-  at::Tensor logsumexp;
-  at::Tensor seed_t, offset_t;
-
-  const bool use_dropout = std::fpclassify(dropout_p) != FP_ZERO;
-
-  // Note [Seed and Offset Device]
-  // If we are currently in graph capture mode, we need to create the seed and offset tensors on the device.
-  // This is necessary for CUDA graph-safe random number generation, which requires the seed and offset tensors
-  // to be single element tensors on device. During graph capture, when the seed and offset tensors are passed
-  // the pointers act as scratch space for storing the RNG state for the backwards pass.
-  // When calling backwards, we either construct a PhiloxState with the pointers or the actual values.
-  // For more information on CUDA graph-safe RNG states, see Note [CUDA Graph-safe RNG states].
-
-  at::PhiloxCudaState philox_state;
-  const bool in_capture_stream =
-      at::cuda::currentStreamCaptureStatus() != at::cuda::CaptureStatus::None;
-  auto device = in_capture_stream ? at::kCUDA : at::kCPU;
-  if (use_dropout) {
-    auto gen = at::get_generator_or_default<at::CUDAGeneratorImpl>(
-        std::nullopt, at::cuda::detail::getDefaultCUDAGenerator());
-
-    // See Note [Acquire lock when using random generators]
-    std::lock_guard<std::mutex> lock(gen->mutex_);
-    // if using dropout, we produce 1 random number for each element of the
-    // attention tensor
-    philox_state = gen->philox_cuda_state(B * num_heads * M * N);
-
-    if (in_capture_stream) {
-      // The seed and offset will be populated by the kernel
-      seed_t = at::empty({}, at::dtype(at::kLong).device(device));
-      offset_t = at::empty({}, at::dtype(at::kLong).device(device));
-    } else {
-      auto [seed, offset] = at::cuda::philox::unpack(philox_state);
-#ifdef USE_ROCM
-      const auto options = at::dtype(at::kLong).device(at::kCUDA);
-#else
-      const auto options = at::dtype(at::kLong);
-#endif
-      seed_t = at::scalar_tensor(at::Scalar(static_cast<int64_t>(seed)), options);
-      offset_t = at::scalar_tensor(at::Scalar(static_cast<int64_t>(offset)), options);
+#ifdef USE_PPU
+  // Get device arch
+  std::string arch = getDeviceArchitecture();
+  TORCH_CHECK(arch != "Error", "getDeviceArchitecture failed!");
+  // 1. Abstract for PPU1.0 and PPU1.5 path
+  // 2. PPU1.0 arch: SM80; PPU1.5 arch: SM89
+  if (arch == "8.0") {
+    // 1. see https://github.com/pytorch/pytorch/commit/9bd6d6e8b02ec1c6285b6ee785e38ec86ce2f1bd
+    // pytorch 2.4 update xformers impl here, add window size param for sliding window
+    // in PPU not support this feature for now since the xformers embedded here does not update if not necessary
+    // Warning will be raised if windows_size has value for better debug in the future.
+    // 2. see https://github.com/pytorch/pytorch/commit/4a384d813b0b824adbf423558419cfa298d89868
+    // pytorch ignore this causal_diagonal from pt2.4, so we just give nullptr for this param
+    // auto [res, logsumexp, seed_t, offset_t] = efficient_attention_forward_cutlass(
+    //     query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_,
+    //     dropout_p, compute_logsumexp, custom_mask_type, scale,
+    //     causal_diagonal, seqlen_k);
+    char *pEnv_perf = std::getenv("SDPA_BACKEND_MEM_EFFI_CE");
+    if (pEnv_perf) {
+      // Abstract for following code
+      auto [res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv] = at::native::efficient_attention_forward_cutlass_origin(
+          query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_, max_seqlen_k_,
+          dropout_p, custom_mask_type, compute_logsumexp, scale, seqlen_k, window_size);
+      return std::make_tuple(res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv);
     }
+
+    if (window_size.has_value()) {
+      TORCH_WARN_ONCE("Warning! window_size was used here!");
+    }
+    auto causal_diagonal = std::nullopt;
+    // Abstract for PPU1.0 path
+    auto [res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv] = efficient_attention_forward_cutlass(
+        query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_, max_seqlen_k_,
+        dropout_p, custom_mask_type, compute_logsumexp, scale, seqlen_k, window_size);
+    return std::make_tuple(res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv);
+  } else if (arch == "8.9") {
+    // Abstract for PPU1.5 path
+    auto [res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv] = at::native::efficient_attention_forward_cutlass_origin(
+        query, key, value, bias, seqstart_q, seqstart_k, max_seqlen_q_, max_seqlen_k_,
+        dropout_p, custom_mask_type, compute_logsumexp, scale, seqlen_k, window_size);
+    return std::make_tuple(res, logsumexp, seed_t, offset_t, max_seqlen_q, max_seqlen_kv);
   } else {
-    // Not using dropout
-    seed_t = at::empty({}, at::dtype(at::kLong).device(device));
-    offset_t = at::empty({}, at::dtype(at::kLong).device(device));
+    // Not support Arch
+    TORCH_CHECK(false, "Unsupported CUDA architecture for memory efficient attention. Supported architectures are SM8.0 and SM8.9, but got: ", arch);
   }
-
-#ifdef USE_ROCM
-  // ROCM Implementation
-
-  // Need this in both aot and CK case
-  const auto softmax_scale = sdp::calculate_scale(query, scale).expect_float();
-  res = at::empty({B, M, num_heads, Kv}, query.options());
-
-  if(at::globalContext().getROCmFAPreferredBackend() ==
-    at::ROCmFABackend::Ck) {
-
-#if defined(USE_ROCM_CK_SDPA)
-    std::optional<Tensor> out(res);
-    std::optional<Tensor> seqused_k = std::nullopt;
-    std::optional<Tensor> alibi_slopes = std::nullopt;
-    auto
-        [out_,
-         q,
-         k,
-         v,
-         lse,
-         seed_t,
-         offset_t,
-         p] =
-            pytorch_flash::mem_eff_forward_ck(
-                                    query,
-                                    key,
-                                    value,
-                                    dropout_p,
-                                    false,                                // return dropout_randval
-                                    custom_mask_type == 0 ? false : true, // is_causal
-                                    softmax_scale,
-                                    bias,
-                                    out,
-                                    std::nullopt,                         // cu_seqlens_q
-                                    std::nullopt,                         // cu_seqlens_k
-                                    seqstart_q,
-                                    seqstart_k,
-                                    std::nullopt,                         // gen_
-                                    seqused_k);                           // seqused_k_
-
-    logsumexp = lse;
 #else
     TORCH_CHECK(false, "Attempting to use CK mem_eff_forward backend in a build that has not built CK");
-#endif
   } else { // use aotriton
 #ifndef DISABLE_AOTRITON
     auto ret = aotriton::v2::flash::check_gpu(stream);
@@ -1661,6 +1577,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
     TORCH_CHECK(false, "Attempting to use AOTriton mem_eff_forward backend in a build that has not built AOTriton");
 #endif
   } // CK BACKEND
+#endif // USE_PPU
 #else
   // CUDA Implementation
   cudaDeviceProp* p = at::cuda::getDeviceProperties(query.device().index());
@@ -1843,8 +1760,6 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
                  }));
   TORCH_CHECK(kernel_launched, "cutlassF: no kernel found to launch!");
   AT_CUDA_CHECK(cudaGetLastError());
-
-#endif // USE_ROCM
   return std::make_tuple(
       std::move(res),
       std::move(logsumexp),
@@ -1853,7 +1768,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
       max_seqlen_q,
       // TODO: why isn't this being set in the kernel?
       max_seqlen_k_.has_value() ? max_seqlen_k_.value() : max_seqlen_k);
-#endif
+#endif // USE_MEM_EFF_ATTENTION
   TORCH_CHECK(false, "USE_MEM_EFF_ATTENTION was not enabled for build.")
   return std::make_tuple(Tensor{}, Tensor{}, Tensor{}, Tensor{}, 0, 0);
 }

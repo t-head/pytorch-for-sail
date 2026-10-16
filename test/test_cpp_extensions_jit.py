@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 import warnings
+from unittest import mock
 
 import torch
 import torch.backends.cudnn
@@ -430,6 +431,80 @@ class TestCppExtensionJIT(common.TestCase):
         self.assertGreater(
             len(empty_flags), 0, "Empty list should generate default flags"
         )
+
+    def test_sail_arch_flags_from_wheel(self):
+        extension = torch.utils.cpp_extension
+        with (
+            mock.patch.object(extension, "IS_PPU_EXTENSION", True),
+            mock.patch.dict(
+                os.environ,
+                {"PYTORCH_SAIL_ARCH": "", "TORCH_CUDA_ARCH_LIST": ""},
+            ),
+            mock.patch.object(
+                torch._C,
+                "_cuda_getArchFlags",
+                return_value="ppu_10; ppu_15,ppu_10",
+            ),
+        ):
+            self.assertEqual(
+                _get_cuda_arch_flags(),
+                ["--gpu-architecture=ppu_10,ppu_15"],
+            )
+
+    def test_sail_arch_flags_explicit_override_and_custom_flag(self):
+        extension = torch.utils.cpp_extension
+        with mock.patch.object(extension, "IS_PPU_EXTENSION", True):
+            with mock.patch.dict(
+                os.environ,
+                {"PYTORCH_SAIL_ARCH": "ppu_15", "TORCH_CUDA_ARCH_LIST": ""},
+            ):
+                self.assertEqual(
+                    _get_cuda_arch_flags(), ["--gpu-architecture=ppu_15"]
+                )
+                self.assertEqual(
+                    _get_cuda_arch_flags(["--gpu-architecture", "ppu_10"]), []
+                )
+                self.assertEqual(_get_cuda_arch_flags(["-arch=ppu_10"]), [])
+
+    def test_sail_arch_flags_reject_torch_cuda_arch_list(self):
+        extension = torch.utils.cpp_extension
+        with (
+            mock.patch.object(extension, "IS_PPU_EXTENSION", True),
+            mock.patch.dict(
+                os.environ,
+                {"PYTORCH_SAIL_ARCH": "ppu_10", "TORCH_CUDA_ARCH_LIST": "8.0"},
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "TORCH_CUDA_ARCH_LIST"):
+                _get_cuda_arch_flags(["--gpu-architecture=ppu_15"])
+
+    def test_sail_arch_flags_require_wheel_metadata_or_override(self):
+        extension = torch.utils.cpp_extension
+        with (
+            mock.patch.object(extension, "IS_PPU_EXTENSION", True),
+            mock.patch.dict(
+                os.environ,
+                {"PYTORCH_SAIL_ARCH": "", "TORCH_CUDA_ARCH_LIST": ""},
+            ),
+            mock.patch.object(torch._C, "_cuda_getArchFlags", return_value=None),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "could not determine target architectures"
+            ):
+                _get_cuda_arch_flags()
+
+        with (
+            mock.patch.object(extension, "IS_PPU_EXTENSION", True),
+            mock.patch.dict(
+                os.environ,
+                {"PYTORCH_SAIL_ARCH": "", "TORCH_CUDA_ARCH_LIST": ""},
+            ),
+            mock.patch.object(
+                torch._C, "_cuda_getArchFlags", return_value="ppu_99"
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported SAIL architecture"):
+                _get_cuda_arch_flags()
 
     @unittest.skipIf(not TEST_CUDNN, "CuDNN not found")
     @unittest.skipIf(TEST_ROCM, "Not supported on ROCm")
