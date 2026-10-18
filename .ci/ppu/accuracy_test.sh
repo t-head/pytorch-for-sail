@@ -46,7 +46,7 @@ python test/run_test.py --inductor \
     --include \
         inductor/test_cuda_repro \
         inductor/test_cudagraph_trees \
-        inductor/test_cuda_select_algorithm \
+        inductor/test_gpu_select_algorithm \
         inductor/test_torchinductor \
         test_modules \
         test_torch \

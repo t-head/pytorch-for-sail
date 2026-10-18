@@ -15,7 +15,6 @@ cd "$REPO_DIR"
 pip install -r requirements.txt
 
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
-echo "[build_wheel] TORCH_VERSION=${TORCH_VERSION} MAX_JOBS=${MAX_JOBS} 链接并发=${PPU_LINK_JOBS}"
 
 echo "[build_wheel] 每次编译前清理旧 build 目录"
 rm -rf "$REPO_DIR/build"
