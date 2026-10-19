@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ppu_build_pip_candidates() {
-    local artifactory=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
+    local artifactory=https://download.t-head.cn/artifactory/api/pypi
     local default_fallbacks=(
         "${artifactory}/pypi_index/simple"
         "${artifactory}/pypi_formal/simple"

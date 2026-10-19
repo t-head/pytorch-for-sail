@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:?REPO_DIR 未设置}"
+REPO_DIR="${REPO_DIR:?REPO_DIR is not set}"
 BUILD_ENVIRONMENT="${BUILD_ENVIRONMENT:-}"
-TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.0}"
-BUILD_ADDITIONAL_PACKAGES="${BUILD_ADDITIONAL_PACKAGES:-}"
 MAX_JOBS="${MAX_JOBS:-0}"
 
 source "$(dirname "$0")/sdk_env.sh"
@@ -15,9 +13,8 @@ cd "$REPO_DIR"
 pip install -r requirements.txt
 
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
-echo "[build_wheel] TORCH_VERSION=${TORCH_VERSION} MAX_JOBS=${MAX_JOBS} 链接并发=${PPU_LINK_JOBS}"
 
-echo "[build_wheel] 每次编译前清理旧 build 目录"
+echo "[build_wheel] Cleaning the old build directory before each build"
 rm -rf "$REPO_DIR/build"
 
 BUILD_START=$(date +%s)
@@ -37,17 +34,17 @@ python3 setup.py bdist_wheel
 BUILD_END=$(date +%s)
 BUILD_DURATION=$((BUILD_END - BUILD_START))
 echo "$BUILD_DURATION" > /tmp/ppu_build_duration_sec
-echo "[build_wheel] 编译耗时 ${BUILD_DURATION}s"
+echo "[build_wheel] Build time ${BUILD_DURATION}s"
 
 WHLS=("$REPO_DIR/dist"/torch-*.whl)
 if [[ ! -e "${WHLS[0]}" ]]; then
-    echo "[build_wheel] 错误: 未找到 dist/torch-*.whl" >&2
+    echo "[build_wheel] Error: dist/torch-*.whl not found" >&2
     exit 1
 fi
-echo "[build_wheel] 产物: $(ls "$REPO_DIR/dist"/torch-*.whl)"
+echo "[build_wheel] Artifact: $(ls "$REPO_DIR/dist"/torch-*.whl)"
 
 if [[ "${PPU_CCACHE_ENABLED:-0}" == "1" ]]; then
     ccache -s 2>/dev/null | sed 's/^/[build_wheel] ccache /' || true
 fi
 
-echo "[build_wheel] 完成"
+echo "[build_wheel] Done"

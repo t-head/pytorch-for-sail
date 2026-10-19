@@ -8,16 +8,10 @@ source .ci/ppu/install_pccl.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
 
-echo "=== 环境自检 (CUDA) ==="
-echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
-echo "rank=${RANK:-0} nproc_per_node=${NPROC_PER_NODE:-1}"
-python --version
-(cd /tmp && python -c "import torch; print('torch', torch.__version__, torch.__file__); print('cuda_available', torch.cuda.is_available()); print('device_count', torch.cuda.device_count())")
-ppu-smi || echo "[warn] ppu-smi 不可用，请确认 pod 已分配 PPU 设备"
 bash .ci/ppu/install_test_deps.sh
 source .ci/ppu/cuda_only_filter.sh
 
-echo "=== CUDA inductor 精度单测（run_test.py --include 白名单过滤，仅 CUDA 相关） ==="
+echo "=== CUDA inductor accuracy tests (run_test.py --include allowlist filter, CUDA-related only) ==="
 
 K_FP8="not fp8 and not FP8 and not Fp8 \
 and not float8 and not Float8 \
@@ -41,7 +35,7 @@ and not test_put_cuda_float16 \
 and not test_corrcoef_cuda_complex \
 and not test_cov_cuda_complex"
 
-echo "=== CUDA inductor 精度单测（单卡全量）==="
+echo "=== CUDA inductor accuracy tests (single card, full set) ==="
 python test/run_test.py --inductor \
     --include \
         inductor/test_cuda_repro \
@@ -53,4 +47,4 @@ python test/run_test.py --inductor \
     -k "$(ppu_cuda_only_k_expr "$K_FP8" "$K_SKIP_CASES")" \
     --verbose
 
-echo "[accuracy] 完成"
+echo "[accuracy] Done"

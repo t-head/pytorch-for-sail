@@ -13,18 +13,18 @@ die() { echo "[install_sdk] $*" >&2; exit 1; }
 
 download_sdk() {
     local dest="$1" downloader
-    log "下载: $SDK_URL"
-    log "落盘: $dest"
+    log "Downloading: $SDK_URL"
+    log "Saving to: $dest"
     if command -v wget >/dev/null 2>&1; then
         downloader=wget
-        log "下载器: $(wget --version 2>&1 | head -1)"
+        log "Downloader: $(wget --version 2>&1 | head -1)"
     elif command -v curl >/dev/null 2>&1; then
         downloader=curl
-        log "下载器: $(curl --version 2>&1 | head -1)"
+        log "Downloader: $(curl --version 2>&1 | head -1)"
     else
-        die "镜像内既无 wget 也无 curl，无法下载 SDK"
+        die "Neither wget nor curl is available in the image, cannot download the SDK"
     fi
-    log "磁盘可用量（SDK 包为 GB 级，/tmp 若是小 tmpfs 会写满）:"
+    log "Available disk space (the SDK package is GB-sized; a small tmpfs /tmp will fill up):"
     df -h /tmp "$SDK_INSTALL_DIR" 2>&1 || true
 
     if [[ "$downloader" == wget ]]; then
@@ -32,7 +32,7 @@ download_sdk() {
     else
         curl -fSL --retry 3 -o "$dest" "$SDK_URL" 2>&1
     fi
-    log "下载完成: $(ls -lh "$dest" | awk '{print $5}')"
+    log "Download complete: $(ls -lh "$dest" | awk '{print $5}')"
 }
 
 try_silent_install() {
@@ -44,13 +44,13 @@ try_silent_install() {
         fi
     done
     [[ ${#flags[@]} -eq 0 ]] && return 1
-    log "检测到免交互参数，尝试静默安装: ${flags[*]}"
+    log "Non-interactive flags detected, trying silent install: ${flags[*]}"
     timeout "$SDK_INSTALL_TIMEOUT" "$runfile" "${flags[@]}" </dev/null
 }
 
 run_with_expect() {
     local runfile="$1"
-    log "使用 expect 自动化交互（翻页 + 输入 '$SDK_LICENSE_ANSWER'）"
+    log "Using expect to automate the interaction (page through + answer '$SDK_LICENSE_ANSWER')"
     expect -f - "$runfile" "$SDK_LICENSE_ANSWER" "$SDK_INSTALL_TIMEOUT" <<'EXPECT_EOF'
 set runfile [lindex $argv 0]
 set answer  [lindex $argv 1]
@@ -71,7 +71,7 @@ expect {
         exp_continue
     }
     timeout {
-        puts "\n\[install_sdk\] expect 交互超时"
+        puts "\n\[install_sdk\] expect interaction timed out"
         exit 124
     }
     eof
@@ -83,7 +83,7 @@ EXPECT_EOF
 
 run_with_pipe() {
     local runfile="$1" i
-    log "未检测到 expect，改用管道喂入按键序列（翻页 + '$SDK_LICENSE_ANSWER'）"
+    log "expect not found, piping a key sequence instead (page through + '$SDK_LICENSE_ANSWER')"
     {
         for ((i = 0; i < 200; i++)); do printf ' \n'; done
         printf '%s\n' "$SDK_LICENSE_ANSWER"
@@ -96,11 +96,11 @@ install_from_runfile() {
     chmod +x "$runfile"
 
     if try_silent_install "$runfile" && [[ -f "$ENVSETUP" ]]; then
-        log "免交互静默安装成功"
+        log "Non-interactive silent install succeeded"
         return 0
     fi
 
-    log "回退到交互式自动化安装: $runfile"
+    log "Falling back to automated interactive install: $runfile"
     if command -v expect >/dev/null 2>&1; then
         run_with_expect "$runfile" || true
     else
@@ -109,33 +109,33 @@ install_from_runfile() {
 }
 
 if [[ -f "$ENVSETUP" ]]; then
-    log "检测到已安装 SDK，跳过下载: $SDK_INSTALL_DIR/PPU_SDK"
+    log "SDK already installed, skipping download: $SDK_INSTALL_DIR/PPU_SDK"
 else
     [[ "$SDK_INSTALL_DIR" == /usr/local ]] || \
-        log "警告: SDK_INSTALL_DIR=$SDK_INSTALL_DIR 非默认 /usr/local，若安装程序不支持自定义前缀，可能仍装到默认路径"
+        log "Warning: SDK_INSTALL_DIR=$SDK_INSTALL_DIR is not the default /usr/local; if the installer does not support a custom prefix, it may still install to the default path"
 
     RUNFILE="/tmp/$(basename "$SDK_URL")"
     download_sdk "$RUNFILE"
-    [[ -f "$RUNFILE" ]] || die "下载失败: $RUNFILE"
+    [[ -f "$RUNFILE" ]] || die "Download failed: $RUNFILE"
 
-    log "开始安装（自解压 .run，将自动翻页并接受许可）: $RUNFILE"
+    log "Starting install (self-extracting .run, will page through and accept the license automatically): $RUNFILE"
     install_from_runfile "$RUNFILE"
     rm -f "$RUNFILE"
 
-    [[ -f "$ENVSETUP" ]] || die "安装后未找到 $ENVSETUP"
+    [[ -f "$ENVSETUP" ]] || die "$ENVSETUP not found after install"
 fi
 
 if [[ ! -e /usr/local/cuda ]]; then
     ln -s "$SDK_INSTALL_DIR/PPU_SDK/CUDA_SDK" /usr/local/cuda
-    log "已创建软链: /usr/local/cuda -> PPU_SDK/CUDA_SDK"
+    log "Created symlink: /usr/local/cuda -> PPU_SDK/CUDA_SDK"
 else
-    log "/usr/local/cuda 已存在，跳过软链"
+    log "/usr/local/cuda already exists, skipping symlink"
 fi
 
 set +u
 source "$ENVSETUP"
 set -u
-log "envsetup.sh 已 source"
-command -v nvcc && nvcc --version | tail -2 || { echo "[install_sdk] 警告: nvcc 不在 PATH" >&2; }
+log "envsetup.sh sourced"
+command -v nvcc && nvcc --version | tail -2 || { echo "[install_sdk] Warning: nvcc is not in PATH" >&2; }
 
-log "完成: $SDK_INSTALL_DIR/PPU_SDK"
+log "Done: $SDK_INSTALL_DIR/PPU_SDK"
