@@ -187,6 +187,54 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 
 转换树中的 `.sailify_done` 用于避免重复转换。原始源码更新后，可在阶段 1 设置 `SAILIFY_FORCE=1` 重新生成转换树；该操作会覆盖转换树中的对应源码文件。
 
+#### 编译方式三：Docker 构建环境（SDK v2.2）
+
+`Dockerfile.sail-sdk2.2` 基于 T-Head SAIL SDK v2.2（`hggcrt3`）基础镜像构建一个可复用的构建环境镜像。它内置工具链（CMake、Ninja、`hgcc`）、Python 构建依赖与匹配的 PCCL，但不包含源码树，因此镜像体积小，源码在构建时以 bind-mount 方式挂载。基础镜像由 `BASE_IMAGE` 参数固定，可通过 `--build-arg BASE_IMAGE=...` 覆盖。
+
+前置条件：
+
+- 已安装 Docker，且网络可拉取基础镜像 `download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005`。
+- 源码已完成子模块初始化（`git submodule update --init --recursive`）。
+- 大容量磁盘上准备一个临时目录（数十 GB 空闲），用于存放源树外构建树与 wheel。
+- 编译 wheel 不需要 PPU 设备；仅运行时需要。
+
+**步骤一 — 构建环境镜像。**构建上下文可以为空（该 Dockerfile 不 COPY 任何文件），因此将 Docker 指向一个空目录即可避免把源码树推送给守护进程：
+
+```bash
+docker build -f Dockerfile.sail-sdk2.2 -t pytorch-sail-buildenv:2.10-sdk2.2 <空目录>
+```
+
+**步骤二 — 编译 wheel。**通过 bind-mount 挂载源码树与临时目录，以源树外方式编译，源码树保持不变：
+
+```bash
+docker run --rm --name sail-build-v210 \
+  -v "$PWD":/workspace/pytorch \
+  -v /path/on/big/disk/sail-build:/workspace/sail-build \
+  -e SAILIFY_OUTPUT_DIR=/workspace/sail-build \
+  -e MAX_JOBS=128 \
+  pytorch-sail-buildenv:2.10-sdk2.2 \
+  bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
+            cd /workspace/pytorch && python3 setup.py sailify && \
+            cd "$SAILIFY_OUTPUT_DIR" && python3 setup.py bdist_wheel'
+```
+
+wheel 会写入宿主机的 `/path/on/big/disk/sail-build/dist/torch-2.10.0-cp312-cp312-linux_x86_64.whl`（约 360 MB）。在多核宿主机上完整构建约 15–20 分钟，以 `0 FAILED` 结束。`dist/` 目录可能还包含转换阶段从源码树拷入的旧 wheel，请以文件时间戳确认新旧。
+
+**步骤三 — 安装并冒烟验证**（在挂有 PPU 设备的宿主机上）：
+
+```bash
+python3 -m pip install /path/on/big/disk/sail-build/dist/torch-*.whl
+source /usr/local/pccl/envsetup.sh release
+python3 -c "import torch; print(torch.__version__, torch.version.sail, torch.cuda.is_available())"
+```
+
+说明：
+
+- `SAILIFY_OUTPUT_DIR` 必须指向挂载源码树之外的目录；不设置会切换为原地转换，从而改写被 bind-mount 的仓库。
+- PCCL：基础镜像自带 PCCL 时镜像直接使用自带版本。若基础镜像未提供，请从 [T-Head 开发者中心](https://developer.t-head.cn/download/index.html) 下载匹配的包，并在构建镜像时通过 `--build-arg PCCL_URL=<链接>` 传入。Dockerfile 中不硬编码任何下载直链。
+- `MAX_JOBS` 不写入镜像，按次运行传入并根据宿主机 CPU 与内存调整。如需同时构建 C++ 测试目标，追加 `-e BUILD_TEST=1`。
+- 编译 wheel 不需要 PPU 设备；运行时才需要：启动运行容器时挂载 PPU 设备节点（例如 `--device=/dev/alixpu_ctl --device=/dev/alixpu`）。
+
 #### 常用构建变量
 
 | 变量 | 示例值 | 说明 |

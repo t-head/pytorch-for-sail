@@ -191,6 +191,54 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 
 The `.sailify_done` marker in the converted tree prevents redundant conversion. After updating the original sources, set `SAILIFY_FORCE=1` during Stage 1 to regenerate the converted tree. Regeneration overwrites corresponding source files in that tree.
 
+#### Build Option 3: Docker Build Environment (SDK v2.2)
+
+`Dockerfile.sail-sdk2.2` builds a reusable environment image on top of the T-Head SAIL SDK v2.2 (`hggcrt3`) base image. It bundles the toolchain (CMake, Ninja, `hgcc`), the Python build dependencies and a matching PCCL, but not the source tree, so the image stays small and the repository is bind-mounted at build time. The base image is pinned by the `BASE_IMAGE` argument and can be overridden with `--build-arg BASE_IMAGE=...`.
+
+Prerequisites:
+
+- Docker installed, with network access to pull the base image `download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005`.
+- A source checkout with all Git submodules initialized (`git submodule update --init --recursive`).
+- A scratch directory on a large disk (tens of GB free) to hold the out-of-place build tree and the wheel.
+- Building the wheel needs no PPU device; only running it does.
+
+**Step 1 - Build the environment image.** The build context can be empty (the Dockerfile copies nothing), so point Docker at an empty directory to avoid streaming the source tree to the daemon:
+
+```bash
+docker build -f Dockerfile.sail-sdk2.2 -t pytorch-sail-buildenv:2.10-sdk2.2 <empty-dir>
+```
+
+**Step 2 - Compile the wheel** out-of-place by bind-mounting the source tree and the scratch directory. The source tree stays unchanged:
+
+```bash
+docker run --rm --name sail-build-v210 \
+  -v "$PWD":/workspace/pytorch \
+  -v /path/on/big/disk/sail-build:/workspace/sail-build \
+  -e SAILIFY_OUTPUT_DIR=/workspace/sail-build \
+  -e MAX_JOBS=128 \
+  pytorch-sail-buildenv:2.10-sdk2.2 \
+  bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
+            cd /workspace/pytorch && python3 setup.py sailify && \
+            cd "$SAILIFY_OUTPUT_DIR" && python3 setup.py bdist_wheel'
+```
+
+The wheel is written to `/path/on/big/disk/sail-build/dist/torch-2.10.0-cp312-cp312-linux_x86_64.whl` on the host (about 360 MB). On a many-core host the full build takes roughly 15-20 minutes and finishes with `0 FAILED`. The `dist/` directory may also contain an older wheel copied from the source tree during conversion, so confirm freshness by the file timestamp.
+
+**Step 3 - Install and smoke-test** (on a host with PPU devices attached):
+
+```bash
+python3 -m pip install /path/on/big/disk/sail-build/dist/torch-*.whl
+source /usr/local/pccl/envsetup.sh release
+python3 -c "import torch; print(torch.__version__, torch.version.sail, torch.cuda.is_available())"
+```
+
+Notes:
+
+- `SAILIFY_OUTPUT_DIR` must point outside the mounted source tree; omitting it selects in-place conversion, which rewrites the bind-mounted repository.
+- PCCL: the image uses the PCCL bundled in the base image when present. If the base image ships none, download the matching package from the [T-Head Developer Center](https://developer.t-head.cn/download/index.html) and pass the link at image build time with `--build-arg PCCL_URL=<link>`. No download link is hard-coded in the Dockerfile.
+- `MAX_JOBS` is not baked into the image; pass it per run and tune it to the host CPU and memory. Add `-e BUILD_TEST=1` to also build the C++ test targets.
+- Building the wheel needs no PPU device. Running it does: start the runtime container with the PPU device nodes (for example `--device=/dev/alixpu_ctl --device=/dev/alixpu`).
+
 #### Common Build Variables
 
 | Variable | Example | Description |
