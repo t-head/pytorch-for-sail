@@ -3,13 +3,13 @@ set -euo pipefail
 
 export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-echo "[base_api] 源码目录: $(pwd)"
+echo "[base_api] Source directory: $(pwd)"
 source .ci/ppu/sdk_env.sh
 source .ci/ppu/install_pccl.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
 
-echo "=== 环境自检 ==="
+echo "=== Environment self-check ==="
 echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
 
 bash .ci/ppu/install_test_deps.sh
@@ -32,18 +32,18 @@ run_pytest() {
     fi
 }
 
-echo "=== CUDA base api 用例（test_ops / test_ops_gradients ，仅 CUDA 相关）==="
+echo "=== CUDA base API cases (test_ops / test_ops_gradients, CUDA-related only) ==="
 
 run_pytest test/test_ops.py "cuda"
 run_pytest test/test_ops_gradients.py "cuda"
 
 if [ "${#FAILED_CASES[@]}" -ne 0 ]; then
-    echo "=== 失败清单（${#FAILED_CASES[@]} 个文件）==="
+    echo "=== Failure list (${#FAILED_CASES[@]} files) ==="
     for case_label in "${FAILED_CASES[@]}"; do
         echo "  - ${case_label}"
     done
-    echo "::error::[base_api] ${#FAILED_CASES[@]} 个测试文件失败，详见上方各 [case] 段落的日志"
+    echo "::error::[base_api] ${#FAILED_CASES[@]} test files failed; see the logs in the [case] sections above"
     exit 1
 fi
 
-echo "[base_api] 完成，全部通过"
+echo "[base_api] Done, all passed"

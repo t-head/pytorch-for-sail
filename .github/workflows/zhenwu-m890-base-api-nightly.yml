@@ -20,6 +20,7 @@ env:
   SOURCE_DIR: /workspace/source
   NODE_SELECTOR: "board-type=ZW-M890P"
   PIP_INDEX: https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
+  TRITON_VERSION: "3.7.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
 
 jobs:

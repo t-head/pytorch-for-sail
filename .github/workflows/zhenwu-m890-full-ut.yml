@@ -30,7 +30,7 @@ jobs:
       upload-wheel: true
 
   ut-shard-1:
-    name: "ppu-full-ut 1/2"
+    name: "zhenwu-full-ut 1/2"
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:

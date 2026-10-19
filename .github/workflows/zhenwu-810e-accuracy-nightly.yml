@@ -1,4 +1,4 @@
-name: henwu-810e-accuracy-nightly
+name: zhenwu-810e-accuracy-nightly
 
 on:
   schedule:
