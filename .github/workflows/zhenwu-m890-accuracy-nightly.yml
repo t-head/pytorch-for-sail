@@ -1,4 +1,4 @@
-name: ppu-zhenwu-m890-accuracy-nightly
+name: zhenwu-m890-accuracy-nightly
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
       upload-wheel: true
 
   accuracy:
-    name: ppu-accuracy-cuda (zhenwu-m890p single card)
+    name: zhenwu-accuracy-cuda
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -143,7 +143,7 @@ jobs:
             echo "- Source: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "zhenwu-m890p single card (1 Zhenwu PPU) CUDA inductor accuracy tests"
+      - name: "zhenwu-m890 CUDA inductor accuracy tests"
         uses: t-head/ppu-scheduler-action@main
         with:
           nnodes: 0

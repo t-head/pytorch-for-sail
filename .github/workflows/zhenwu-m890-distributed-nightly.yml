@@ -1,4 +1,4 @@
-name: ppu-zhenwu-m890-distributed-nightly
+name: zhenwu-m890-distributed-nightly
 
 on:
   schedule:
@@ -30,7 +30,7 @@ jobs:
       board: "890"
       upload-wheel: true
   distribute:
-    name: ppu-distribute (zhenwu-m890p multi-card 2 Zhenwu PPU)
+    name: ppu-distribute
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -139,7 +139,7 @@ jobs:
       - name: Remove .git (reduce NAS staging size)
         run: rm -rf .git
 
-      - name: "zhenwu-m890p multi-card (2 Zhenwu PPU) CUDA distributed tests"
+      - name: "zhenwu-m890 distributed tests"
         uses: t-head/ppu-scheduler-action@main
         with:
           nnodes: 0

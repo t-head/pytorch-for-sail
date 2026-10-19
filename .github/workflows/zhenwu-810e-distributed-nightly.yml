@@ -1,4 +1,4 @@
-name: ppu-zhenwu-810e-distributed-nightly
+name: zhenwu-810e-distributed-nightly
 
 on:
   schedule:
@@ -31,7 +31,7 @@ jobs:
       upload-wheel: true
 
   distribute:
-    name: ppu-distribute (zhenwu-810e multi-card 2 Zhenwu PPU)
+    name: zhenwu-distribute
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:

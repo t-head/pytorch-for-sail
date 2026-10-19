@@ -1,4 +1,4 @@
-name: ppu-ci-zhenwu-810e
+name: zhenwu-810e-ci
 
 on:
   pull_request:
@@ -53,7 +53,7 @@ jobs:
       upload-wheel: true
 
   smoke:
-    name: ppu-smoke (zhenwu-810e single card)
+    name: zhenwu-smoke-test
     needs: build
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: k8s-runner-group-cpu-thead
@@ -153,7 +153,7 @@ jobs:
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
 
   perf:
-    name: ppu-perf-cuda (zhenwu-810e single card)
+    name: zhenwu-perf-test
     needs: build
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: k8s-runner-group-cpu-thead

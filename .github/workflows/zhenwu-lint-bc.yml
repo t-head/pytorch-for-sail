@@ -1,4 +1,4 @@
-name: ppu-lint-bc
+name: zhenwu-lint-bc
 
 on:
   pull_request:
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   bc_linter:
-    name: ppu-bc-linter
+    name: zhenwu-bc-linter
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:

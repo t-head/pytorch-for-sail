@@ -1,4 +1,4 @@
-name: ppu-build (reusable)
+name: zhenwu-build (reusable)
 
 on:
   workflow_call:

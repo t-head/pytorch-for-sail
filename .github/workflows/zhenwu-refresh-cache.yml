@@ -1,4 +1,4 @@
-name: ppu-refresh-cache
+name: zhenwu-refresh-cache
 
 on:
   workflow_dispatch:

@@ -1,4 +1,4 @@
-name: ppu-full-ut-zhenwu-810e
+name: zhenwu-810e-full-ut
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
       upload-wheel: true
 
   ut-shard-1:
-    name: "ppu-full-ut 1/2 (zhenwu-810e single card, heavy trio)"
+    name: "ppu-full-ut 1/2"
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -167,7 +167,7 @@ jobs:
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/full_ut_test.sh
 
   ut-shard-2:
-    name: "ppu-full-ut 2/2 (zhenwu-810e single card, all remaining files)"
+    name: "ppu-full-ut 2/2"
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:

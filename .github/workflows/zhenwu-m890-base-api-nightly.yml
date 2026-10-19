@@ -1,4 +1,4 @@
-name: ppu-zhenwu-m890-base-api-nightly
+name: zhenwu-m890-base-api-nightly
 
 on:
   schedule:
@@ -30,7 +30,7 @@ jobs:
       upload-wheel: true
 
   base_api:
-    name: ppu-base-api-cuda (zhenwu-m890p single card)
+    name: zhenwu-base-api-cuda
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
@@ -139,7 +139,7 @@ jobs:
             echo "- Source: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "zhenwu-m890p single card (1 Zhenwu PPU) base api"
+      - name: "zhenwu-m890 base api"
         uses: t-head/ppu-scheduler-action@main
         with:
           nnodes: 0
