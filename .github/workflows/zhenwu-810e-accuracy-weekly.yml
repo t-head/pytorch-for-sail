@@ -1,8 +1,8 @@
-name: zhenwu-810e-distributed-nightly
+name: zhenwu-810e-accuracy-weekly
 
 on:
   schedule:
-    - cron: '0 18 * * 5'
+    - cron: '0 19 * * 5'
   workflow_dispatch:
 
 concurrency:
@@ -30,16 +30,15 @@ jobs:
       board: "810"
       upload-wheel: true
 
-  distribute:
-    name: zhenwu-distribute
+  accuracy:
+    name: zhenwu-810e-accuracy-cuda
     needs: build
     runs-on: k8s-runner-group-cpu-thead
     container:
       image: ghcr.io/actions/actions-runner:latest
-    timeout-minutes: 300
+    timeout-minutes: 180
 
     steps:
-
       - name: Checkout PyTorch
         id: checkout
         continue-on-error: true
@@ -71,6 +70,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+
       - name: Download whl artifact
         id: download-wheel
         continue-on-error: true
@@ -140,25 +140,21 @@ jobs:
             echo "- Source: ${BUILD_RUN_URL}"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Remove .git (reduce NAS staging size)
-        run: rm -rf .git
-
-      - name: "zhenwu-810e multi-card (2 Zhenwu PPU) CUDA distributed tests"
+      - name: "zhenwu-810e inductor accuracy tests"
         uses: t-head/ppu-scheduler-action@main
         with:
-
           nnodes: 0
-          nproc_per_node: 2
+          nproc_per_node: 1
           node_selector: ${{ env.NODE_SELECTOR }}
           host_volumes: ${{ env.HOST_VOLUMES }}
           image: ${{ env.IMAGE }}
           namespace: ${{ env.NAMESPACE }}
           source_dir: ${{ env.SOURCE_DIR }}
-          timeout_minutes: 240
+          timeout_minutes: 120
           command: |
             WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
             SDK_INSTALL_DIR="/usr/local" \
             PIP_INDEX="${{ env.PIP_INDEX }}" \
             TRITON_INDEX="${{ env.PIP_INDEX }}" \
             TRITON_VERSION="${{ env.TRITON_VERSION }}" \
-            bash ${{ env.SOURCE_DIR }}/.ci/ppu/distributed_test.sh
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/accuracy_test.sh

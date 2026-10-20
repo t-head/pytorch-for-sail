@@ -19,12 +19,16 @@ unset RANK LOCAL_RANK WORLD_SIZE NODE_RANK MASTER_ADDR MASTER_PORT
 bash .ci/ppu/install_test_deps.sh
 source .ci/ppu/cuda_only_filter.sh
 
-K_FP8_EXPR="not fp8 and not FP8 and not Fp8 \
+if [[ "${DISTRIBUTED_SKIP_FP8:-0}" == "1" ]]; then
+    K_FP8_EXPR="not fp8 and not FP8 and not Fp8 \
 and not float8 and not Float8 \
 and not e4m3 and not E4M3 \
 and not e5m2 and not E5M2 \
 and not scaled_matmul \
 and not test_fixed_striding"
+else
+    K_FP8_EXPR=""
+fi
 
 K_SKIP_CASES="not test_dtensor_seq_par_shard_dim_0 \
 and not test_set_reduce_scatter_divide_factor \
@@ -57,7 +61,7 @@ run_case() {
     fi
 }
 
-echo "=== CUDA distributed cases (2 cards; CUDA only, FP8 excluded) ==="
+echo "=== CUDA distributed cases (2 cards; CUDA only) ==="
 
 run_case "" distributed/test_c10d_functional_native
 run_case "" distributed/tensor/test_dtensor_compile

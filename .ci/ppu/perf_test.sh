@@ -10,17 +10,20 @@ source .ci/ppu/sdk_env.sh
 source .ci/ppu/install_pccl.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
-
-echo "=== Environment self-check (CUDA) ==="
-echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
-
 bash .ci/ppu/install_test_deps.sh
 source .ci/ppu/cuda_only_filter.sh
 
 TEST_REPORTS_DIR="$REPO_ROOT/test/test-reports"
 mkdir -p "$TEST_REPORTS_DIR"
-echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k excluding FP8/CPU) ==="
-K_FP8="not fp8 and not float8 and not e4m3 and not e5m2"
+
+if [[ "${PERF_SKIP_FP8:-0}" == "1" ]]; then
+    K_FP8="not fp8 and not float8 and not e4m3 and not e5m2"
+    echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k excluding FP8/CPU) ==="
+else
+    K_FP8=""
+    echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k excluding CPU) ==="
+fi
+
 K_SKIP_CASES="not test_fusion_choice4_cpu \
 and not test_cat \
 and not test_cat_pointwise_many_complex_inputs \
@@ -47,7 +50,6 @@ fi
 
 echo "=== [2/2] gpt_fast micro-benchmark (torch.compile end-to-end timing) ==="
 if ! (cd /tmp && python -c "import torchao" >/dev/null 2>&1); then
-    echo "[perf] torchao unavailable, trying to install it from candidate pip indexes (--no-deps)"
     source "$REPO_ROOT/.ci/ppu/pip_sources.sh"
     ppu_build_pip_candidates
     for index in "${PIP_CANDIDATES[@]}" __pip_default__; do
@@ -58,7 +60,6 @@ if ! (cd /tmp && python -c "import torchao" >/dev/null 2>&1); then
             label="${index}"
             pip_args+=(-i "${index}")
         fi
-        echo "[perf] Trying index: ${label}"
         if python -m pip install "${pip_args[@]}" torchao; then
             echo "[perf] torchao install succeeded (index: ${label})"
             break
@@ -68,14 +69,7 @@ if ! (cd /tmp && python -c "import torchao" >/dev/null 2>&1); then
 fi
 
 if ! (cd /tmp && python -c "import torchao; print('torchao', torchao.__version__)"); then
-    cat <<'EOF'
-[perf][warn] torchao is still unavailable, skipping the gpt_fast micro-benchmark (does not affect the result of this job).
-  Reason: benchmarks/gpt_fast/benchmark.py -> generate.py does `import torchao` at the top,
-          so without torchao even the import fails; the official install method builds from source on github.com,
-          and the pod has no internet egress.
-  Fix: have the Zhenwu PPU base image preinstall torchao (see .github/ci_commit_pins/torchao.txt for the version),
-          or make sure the internal pip index has a torchao wheel ABI-compatible with this torch version.
-EOF
+    echo "[perf][warn] torchao unavailable; skipping gpt_fast."
     echo "[perf] Done (stage 1 only)"
     exit 0
 fi

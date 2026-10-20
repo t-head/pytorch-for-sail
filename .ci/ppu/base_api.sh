@@ -4,19 +4,15 @@ set -euo pipefail
 export SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 echo "[base_api] Source directory: $(pwd)"
+
 source .ci/ppu/sdk_env.sh
 source .ci/ppu/install_pccl.sh
 bash .ci/ppu/install_wheel.sh
 bash .ci/ppu/install_triton.sh
-
-echo "=== Environment self-check ==="
-echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
-
 bash .ci/ppu/install_test_deps.sh
 source .ci/ppu/cuda_only_filter.sh
 
 CRASH_LIST="${CRASH_LIST:-.ci/ppu/badcase_list/base_api.txt}"
-echo "[base_api] crash list: ${CRASH_LIST}"
 
 FAILED_CASES=()
 run_pytest() {

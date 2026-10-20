@@ -5,11 +5,7 @@ TRITON_VERSION="${TRITON_VERSION:-3.6.0}"
 TRITON_INDEX="${TRITON_INDEX:-${PIP_INDEX:-}}"
 
 if [[ -z "${TRITON_INDEX}" ]]; then
-    cat >&2 <<'EOF'
-[triton][error] Neither TRITON_INDEX nor PIP_INDEX is set, cannot determine where to get triton from.
-triton may only be installed from the internal pypi_index repo (the same version on public pypi is not the Zhenwu PPU-adapted build),
-so there is intentionally no default index fallback here. Please inject TRITON_INDEX or PIP_INDEX in the workflow command.
-EOF
+    echo "[triton][error] Neither TRITON_INDEX nor PIP_INDEX is set, cannot determine where to get triton from." >&2
     exit 1
 fi
 

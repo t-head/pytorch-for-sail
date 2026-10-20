@@ -1,4 +1,4 @@
-name: zhenwu-m890-full-ut
+name: zhenwu-m890-full-ut-weekly
 
 on:
   workflow_dispatch:
