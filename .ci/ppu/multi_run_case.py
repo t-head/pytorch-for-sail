@@ -1,5 +1,5 @@
 """
-python3 /any/where/mulit_run_case.py test/test_ops.py
+python3 mulit_run_case.py test/test_ops.py
 """
 
 import os
@@ -51,6 +51,7 @@ class Config:
     repo_root: str         
     progress_file: str      
     per_test_timeout: int
+    collect_timeout: int
     pytest_args: tuple = ()
     crash_list: str = ""
 
@@ -60,7 +61,8 @@ class Config:
         return cls(
             repo_root=os.path.abspath(repo_root or os.getcwd()),
             progress_file=progress_file,
-            per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "60")),
+            per_test_timeout=int(os.environ.get("PER_TEST_TIMEOUT", "90")),
+            collect_timeout=int(os.environ.get("COLLECT_TIMEOUT", "900")),
             pytest_args=tuple(argv),
             crash_list=os.path.abspath(crash_list) if crash_list else "",
         )
@@ -91,6 +93,12 @@ class ProgressLog:
             f.write("\t".join(fields) + "\n")
             f.flush()
             os.fsync(f.fileno())
+
+    def size(self) -> int:
+        try:
+            return os.path.getsize(self.path)
+        except OSError:
+            return -1
 
     def _lines(self):
         if not os.path.exists(self.path):
@@ -137,20 +145,46 @@ class CrashList:
     def __init__(self, path: str):
         self.path = path
 
-    def nodeids(self) -> set:
+    def _entries(self):
+        """Yield (section, entry); section is the file of the enclosing [path] header, None if global."""
         if not self.path or not os.path.exists(self.path):
-            return set()
+            return
+        section = None
         with open(self.path) as f:
-            return {line.split("\t", 1)[0].strip() for line in f
-                    if line.strip() and not line.lstrip().startswith("#")}
+            for line in f:
+                text = line.split("\t", 1)[0].strip()
+                if not text or text.startswith("#"):
+                    continue
+                if text.startswith("[") and text.endswith("]"):
+                    # "[]" switches back to global entries
+                    section = os.path.normpath(text[1:-1].strip()) if text[1:-1].strip() else None
+                    continue
+                yield section, text
+
+    def nodeids(self) -> set:
+        return {entry for _, entry in self._entries()}
 
     def matching_nodeids(self, items) -> set:
-        entries = self.nodeids()
-        exact = {entry for entry in entries if "::" in entry}
-        patterns = tuple(entry for entry in entries if "::" not in entry)
-        return {item.nodeid for item in items
-                if item.nodeid in exact
-                or any(pattern in item.nodeid for pattern in patterns)}
+        # Full nodeids match exactly wherever they appear; global patterns are
+        # case-sensitive substrings over every file; patterns under a [path] section
+        # only apply to that file and are case-insensitive, mirroring a per-file -k "not ...".
+        exact, patterns, scoped = set(), [], {}
+        for section, entry in self._entries():
+            if "::" in entry:
+                exact.add(entry)
+            elif section is None:
+                patterns.append(entry)
+            else:
+                scoped.setdefault(section, []).append(entry.lower())
+
+        def listed(nodeid):
+            if nodeid in exact or any(p in nodeid for p in patterns):
+                return True
+            file_scoped = scoped.get(nodeid.split("::", 1)[0], ())
+            lowered = nodeid.lower()
+            return any(p in lowered for p in file_scoped)
+
+        return {item.nodeid for item in items if listed(item.nodeid)}
 
     def add(self, nodeid: str, status: str) -> bool:
         """Append a record; return False if no path is configured or the full nodeid already exists."""
@@ -159,8 +193,15 @@ class CrashList:
         directory = os.path.dirname(self.path)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        # A hand-edited list may lack the trailing newline; appending directly would
+        # glue the new record onto the last entry and silently break both.
+        needs_newline = False
+        if os.path.exists(self.path) and os.path.getsize(self.path) > 0:
+            with open(self.path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                needs_newline = f.read(1) != b"\n"
         with open(self.path, "a") as f:
-            f.write(f"{nodeid}\t{status}\n")
+            f.write(("\n" if needs_newline else "") + f"{nodeid}\t{status}\n")
             f.flush()
             os.fsync(f.fileno())
         return True
@@ -276,13 +317,15 @@ def pytest_runtest_logreport(report):
 
 class Watchdog:
 
-    def __init__(self, proc, progress: ProgressLog, cfg: Config):
+    def __init__(self, proc, progress: ProgressLog, cfg: Config, start_size: int):
         self._proc = proc
         self._progress = progress
         self._cfg = cfg
+        self._start_size = start_size
         self._stop = threading.Event()
         self._thread = None
         self.killed = False
+        self.killed_in_collection = False
 
     def start(self) -> "Watchdog":
         self._thread = threading.Thread(target=self._watch, daemon=True)
@@ -296,16 +339,20 @@ class Watchdog:
         return rc
 
     def _watch(self) -> None:
-        last_size, last_change = -1, time.time()
+        # Nothing is written during collection; the first write of a round is the
+        # TOTAL record from pytest_collection_finish, so until the file grows past
+        # its round-start size the child is still collecting and gets the longer budget.
+        last_size, last_change = self._start_size, time.time()
         while not self._stop.wait(POLL_SECONDS):
-            try:
-                size = os.path.getsize(self._progress.path)
-            except OSError:
-                size = -1
+            size = self._progress.size()
+            collecting = size == self._start_size
+            timeout = (self._cfg.collect_timeout if collecting
+                       else self._cfg.per_test_timeout)
             if size != last_size:
                 last_size, last_change = size, time.time()
-            elif time.time() - last_change > self._cfg.per_test_timeout:
+            elif time.time() - last_change > timeout:
                 self.killed = True
+                self.killed_in_collection = collecting
                 self._kill_group()
                 return
 
@@ -407,6 +454,7 @@ def orchestrate(cfg: Config) -> int:
               f"({len(crash_list.nodeids())} exclusion entries)")
     newly_listed = []
     rounds = 0
+    aborted = False
     while True:
         rounds += 1
         prev_done = log.done_nodeids()
@@ -417,7 +465,8 @@ def orchestrate(cfg: Config) -> int:
         )
         print(f"\n===== round {rounds}: {progress} =====")
 
-        watchdog = Watchdog(_spawn_child(cfg), log, cfg).start()
+        start_size = log.size()
+        watchdog = Watchdog(_spawn_child(cfg), log, cfg, start_size).start()
         rc, killed = watchdog.wait(), watchdog.killed
 
         stuck = log.stuck_nodeid()
@@ -429,13 +478,25 @@ def orchestrate(cfg: Config) -> int:
                 newly_listed.append((stuck, status))
             continue 
 
+        if killed:
+            if watchdog.killed_in_collection:
+                print(f"  ERROR: collection produced no progress for "
+                      f"{cfg.collect_timeout}s, killed by watchdog "
+                      f"(raise COLLECT_TIMEOUT if collection is just slow).")
+            else:
+                print(f"  ERROR: no progress for {cfg.per_test_timeout}s outside "
+                      f"any test case, killed by watchdog.")
+            aborted = True
+            break
+
         if rc in (0, 1, 5):
             print(f"  pytest exited normally (rc={rc}); all remaining cases done.")
             break
 
         if len(log.done_nodeids()) <= len(prev_done):
-            print(f"  WARN: abnormal exit rc={rc} with no progress; aborting to "
+            print(f"  ERROR: abnormal exit rc={rc} with no progress; aborting to "
                   f"avoid an infinite loop.")
+            aborted = True
             break
 
     counts = _print_summary(log)
@@ -444,6 +505,14 @@ def orchestrate(cfg: Config) -> int:
               f"{cfg.crash_list} (deselected from next run on):")
         for nodeid, status in newly_listed:
             print(f"  {status:<6} {nodeid}")
+    if aborted:
+        print("FAIL: run aborted before all selected cases finished, see the "
+              "round log above.")
+        return 1
+    if not counts:
+        print("FAIL: zero cases finished (nothing collected/selected); check the "
+              "-k expression, the crash list and whether the device is visible.")
+        return 1
     return 1 if set(counts) - OK_STATUSES else 0
 
 
