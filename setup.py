@@ -1177,6 +1177,13 @@ class build_ext(setuptools.command.build_ext.build_ext):
         dst.mkdir(parents=True, exist_ok=True)
         for f in src.glob("*.h"):
             shutil.copy2(f, dst / f.name)
+        # Keep the old torch/.ppu_compat path reachable for downstream consumers.
+        legacy = build_lib / "torch" / ".ppu_compat"
+        if legacy.is_symlink():
+            legacy.unlink()
+        elif legacy.is_dir():
+            shutil.rmtree(legacy)
+        legacy.symlink_to("include/.ppu_compat", target_is_directory=True)
 
     def _embed_libomp(self) -> None:
         # Copy libiomp5.dylib/libomp.dylib inside the wheel package on MacOS
