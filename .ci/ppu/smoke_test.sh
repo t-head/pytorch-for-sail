@@ -64,6 +64,7 @@ python test/run_test.py \
         nn/attention/test_open_registry \
         inductor/test_flex_flash \
     -k "$K_SKIP_CASES" \
+    --keep-going \
     --verbose
 
 
