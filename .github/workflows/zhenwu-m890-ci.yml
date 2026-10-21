@@ -54,7 +54,7 @@ jobs:
       upload-wheel: true
 
   smoke:
-    name: zhenwu-smoke-test
+    name: zhenwu-m890-smoke-test
     needs: build
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: k8s-runner-group-cpu-thead

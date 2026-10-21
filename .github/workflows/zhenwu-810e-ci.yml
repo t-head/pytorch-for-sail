@@ -53,7 +53,7 @@ jobs:
       upload-wheel: true
 
   smoke:
-    name: zhenwu-smoke-test
+    name: zhenwu-810e-smoke-test
     needs: build
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: k8s-runner-group-cpu-thead
@@ -153,7 +153,7 @@ jobs:
             bash ${{ env.SOURCE_DIR }}/.ci/ppu/smoke_test.sh
 
   perf:
-    name: zhenwu-perf-test
+    name: zhenwu-810e-perf-test
     needs: build
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
     runs-on: k8s-runner-group-cpu-thead

@@ -1,4 +1,4 @@
-name: zhenwu-build (reusable)
+name: zhenwu-build
 
 on:
   workflow_call:
