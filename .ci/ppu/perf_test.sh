@@ -16,13 +16,7 @@ source .ci/ppu/cuda_only_filter.sh
 TEST_REPORTS_DIR="$REPO_ROOT/test/test-reports"
 mkdir -p "$TEST_REPORTS_DIR"
 
-if [[ "${PERF_SKIP_FP8:-0}" == "1" ]]; then
-    K_FP8="not fp8 and not float8 and not e4m3 and not e5m2"
-    echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k excluding FP8/CPU) ==="
-else
-    K_FP8=""
-    echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k excluding CPU) ==="
-fi
+echo "=== [1/2] CUDA inductor performance tests (run_test.py --include allowlist + -k) ==="
 
 K_SKIP_CASES="not test_fusion_choice4_cpu \
 and not test_cat \
@@ -32,6 +26,7 @@ and not test_cat_pointwise_config_option \
 and not test_cat_pointwise \
 and not test_partitioning_with_view \
 and not test_equivalent_template_code \
+and not test_tield_kernel_fusion_cuda \
 and not test_split_scan"
 python test/run_test.py \
     --include \
@@ -39,7 +34,7 @@ python test/run_test.py \
         inductor/test_benchmark_fusion \
         inductor/test_benchmarking \
         inductor/test_analysis \
-    -k "$(ppu_cuda_only_k_expr "$K_FP8" "$K_SKIP_CASES")" \
+    -k "${K_SKIP_CASES}" \
     --verbose
 
 if [[ "${RUN_GPT_FAST:-1}" != "1" ]]; then

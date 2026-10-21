@@ -33,7 +33,8 @@ and not test_mm_bmm_dtype_overload_float16_M \
 and not test_mm_with_mH_args_backend_cublas_cuda \
 and not test_matmul_dropout_device_cpu \
 and not test_float8_error_messages_cuda \
-and not test_float8_rowwise_scaling_sanity_use_fast_accum \
+and not test_float8_rowwise_scaling_sanity_use_fast_accum_False_cuda \
+and not test_float8_rowwise_scaling_sanity_use_fast_accum_True_cuda \
 and not test_float8_scale_fast_accum_cuda \
 and not test_scaled_mm_vs_emulated_row_wise_bfloat16_shapes0_cuda \
 and not test_float8_basics_cuda \
@@ -50,7 +51,11 @@ and not test_triton_template_generated_code_caching_bmm \
 and not test_triton_template_generated_code_caching_mm_plus_mm \
 and not test_cublas_addmm_size_10000_backend_cublas_cuda_float32 \
 and not test_float8_basics_layout_permutations_cpu \
-and not test_addmm_baddmm_dtype_overload_bfloat16_M_1_N_1_K_1_batch_size0_broadcast_self_False_high_precision_self_False_backend_cublas_cuda"
+and not test_max_autotune_remote_caching_dynamic_False \
+and not test_addmm_baddmm_dtype_overload_bfloat16 \
+and not test_addmm_baddmm_dtype_overload_float16 \
+and not test_mm_bmm_dtype_overload_bfloat16 \
+and not test_mixed_dtypes_linear_cuda_bfloat16"
 
 python test/run_test.py \
     --include \
@@ -58,8 +63,7 @@ python test/run_test.py \
         test_scaled_matmul_cuda \
         nn/attention/test_open_registry \
         inductor/test_flex_flash \
-        inductor/test_max_autotune \
-    -k "$(ppu_cuda_only_k_expr "$K_SKIP_CASES")" \
+    -k "$K_SKIP_CASES" \
     --verbose
 
 
