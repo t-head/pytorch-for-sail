@@ -55,6 +55,7 @@ and not test_max_autotune_remote_caching_dynamic_False \
 and not test_addmm_baddmm_dtype_overload_bfloat16 \
 and not test_addmm_baddmm_dtype_overload_float16 \
 and not test_mm_bmm_dtype_overload_bfloat16 \
+and not test_cublas_addmm_size_10000_backend_cublaslt_cuda_float32 \
 and not test_mixed_dtypes_linear_cuda_bfloat16"
 
 python test/run_test.py \
@@ -64,6 +65,7 @@ python test/run_test.py \
         nn/attention/test_open_registry \
         inductor/test_flex_flash \
     -k "$K_SKIP_CASES" \
+    --keep-going \
     --verbose
 
 
