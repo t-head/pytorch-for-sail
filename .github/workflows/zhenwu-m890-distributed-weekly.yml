@@ -1,0 +1,159 @@
+name: zhenwu-m890-distributed-weekly
+
+on:
+  schedule:
+    - cron: '0 18 * * 5'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+  NAMESPACE: ppu-sched
+  HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
+  SOURCE_DIR: /workspace/source
+  NODE_SELECTOR: "board-type=ZW-M890P"
+  PIP_INDEX: https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
+  TRITON_VERSION: "3.6.0"
+  WHEEL_DIR_REL: .ci/ppu/wheelhouse
+
+jobs:
+  build:
+    uses: ./.github/workflows/_zhenwu_build.yml
+    with:
+      board: "890"
+      upload-wheel: true
+  distribute:
+    name: ppu-distribute
+    needs: build
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout PyTorch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Wait before retry (checkout 1)
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (retry 1)
+        id: checkout-retry-1
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Wait before retry (checkout 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        run: sleep 15
+
+      - name: Checkout PyTorch (retry 2)
+        if: steps.checkout.outcome == 'failure' && steps.checkout-retry-1.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Download whl artifact
+        id: download-wheel
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ${{ env.WHEEL_DIR_REL }}
+
+      - name: Clean up before retry (1)
+        if: steps.download-wheel.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 30
+
+      - name: Download whl artifact (retry 1)
+        id: download-wheel-retry-1
+        if: steps.download-wheel.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ${{ env.WHEEL_DIR_REL }}
+
+      - name: Clean up before retry (2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+        run: |
+          rm -rf "${WHEEL_DIR}"
+          sleep 60
+
+      - name: Download whl artifact (retry 2)
+        if: steps.download-wheel.outcome == 'failure' && steps.download-wheel-retry-1.outcome == 'failure'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ${{ env.WHEEL_DIR_REL }}
+
+      - name: Verify whl is in place
+        env:
+          WHEEL_DIR: ${{ env.WHEEL_DIR_REL }}
+          BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          count=0
+          wheel=""
+          for f in "${WHEEL_DIR}"/torch-*.whl; do
+            [ -e "$f" ] || continue
+            count=$((count + 1))
+            wheel="$f"
+          done
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly 1 torch-*.whl under ${WHEEL_DIR}, found ${count}"
+            ls -la "${WHEEL_DIR}" 2>/dev/null || echo "(directory does not exist)"
+            exit 1
+          fi
+          wheel_name=$(basename "$wheel")
+          echo "[wheel] ${wheel_name} ($(du -h "$wheel" | cut -f1))"
+          {
+            echo "### whl under test"
+            echo ""
+            echo "- Package: \`${wheel_name}\`"
+            echo "- Source: ${BUILD_RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove .git (reduce NAS staging size)
+        run: rm -rf .git
+
+      - name: "zhenwu-m890 distributed tests"
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          nnodes: 0
+          nproc_per_node: 2
+          node_selector: ${{ env.NODE_SELECTOR }}
+          host_volumes: ${{ env.HOST_VOLUMES }}
+          image: ${{ env.IMAGE }}
+          namespace: ${{ env.NAMESPACE }}
+          source_dir: ${{ env.SOURCE_DIR }}
+          timeout_minutes: 240
+          command: |
+            WHEEL_DIR="${{ env.SOURCE_DIR }}/${{ env.WHEEL_DIR_REL }}" \
+            SDK_INSTALL_DIR="/usr/local" \
+            PIP_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_INDEX="${{ env.PIP_INDEX }}" \
+            TRITON_VERSION="${{ env.TRITON_VERSION }}" \
+            bash ${{ env.SOURCE_DIR }}/.ci/ppu/distributed_test.sh

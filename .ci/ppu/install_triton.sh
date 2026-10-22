@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TRITON_VERSION="${TRITON_VERSION:-3.6.0}"
+TRITON_INDEX="${TRITON_INDEX:-${PIP_INDEX:-}}"
+
+if [[ -z "${TRITON_INDEX}" ]]; then
+    echo "[triton][error] Neither TRITON_INDEX nor PIP_INDEX is set, cannot determine where to get triton from." >&2
+    exit 1
+fi
+
+echo "=== Installing triton==${TRITON_VERSION} (sole index: ${TRITON_INDEX}) ==="
+env -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL PIP_CONFIG_FILE=/dev/null \
+    python -m pip install \
+    --disable-pip-version-check --no-cache-dir --retries 3 --timeout 60 \
+    --index-url "${TRITON_INDEX}" \
+    "triton==${TRITON_VERSION}"
+
+(cd /tmp && python -c "import triton; print('triton', triton.__version__, triton.__file__)")
+
+echo "[triton] Done"
