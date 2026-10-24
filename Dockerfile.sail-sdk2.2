@@ -1,0 +1,176 @@
+# PyTorch-for-SAIL 2.13 build environment on T-Head SAIL SDK v2.2 (hggcrt3).
+#
+# This image provides the toolchain and Python build dependencies needed to
+# compile the SAIL wheel, and ensures a matching PCCL library is present; the
+# source tree is intentionally NOT baked in. The host Docker root filesystem is
+# often small, and a full in-image compile would produce a 25-30 GB image, so
+# build by bind-mounting the repository instead:
+#
+#   # 1) build this environment image (small: base + apt/pip layers). The build
+#   #    context can be empty (this Dockerfile COPYs nothing); point docker at an
+#   #    empty dir so the multi-GB source tree is not streamed to the daemon.
+#   docker build -f Dockerfile.sail-sdk2.2 -t pytorch-sail-buildenv:2.13-sdk2.2 <empty-ctx-dir>
+#
+#   # 2) compile the wheel out-of-place into a host directory (large scratch on
+#   #    the host, e.g. under /mnt/ssd); the source tree stays unchanged. This
+#   #    runs the two-stage sailify build documented in README.md directly, so no
+#   #    extra build script is needed. SAILIFY_OUTPUT_DIR MUST point outside the
+#   #    mounted source tree -- omitting it selects in-place conversion, which
+#   #    rewrites the bind-mounted repository. Tune MAX_JOBS to the host CPU/RAM.
+#   docker run --rm --name sail-build-v213 \
+#     -v "$PWD":/workspace/pytorch \
+#     -v /path/on/big/disk/sail-build:/workspace/sail-build \
+#     -e SAILIFY_OUTPUT_DIR=/workspace/sail-build \
+#     -e MAX_JOBS=128 \
+#     pytorch-sail-buildenv:2.13-sdk2.2 \
+#     bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
+#               cd /workspace/pytorch && python3 setup.py sailify && \
+#               cd "$SAILIFY_OUTPUT_DIR" && python3 setup.py bdist_wheel'
+#   # BUILD_TEST defaults to 0 (lean build; the Python wheel is unaffected). Add
+#   # `-e BUILD_TEST=1` to also compile the C++ test binaries as README does.
+#
+#   # wheel: /path/on/big/disk/sail-build/dist/torch-2.13.0-cp312-*.whl
+#
+# The base image ENTRYPOINT (/opt/t-head/entrypoint.sh) already sources the SDK
+# and PCCL environments and then exec's the command above; the explicit `source`
+# lines keep the build working even when the entrypoint is bypassed
+# (--entrypoint /bin/bash). Python build deps are pre-installed in this image,
+# so no `pip install -r requirements.txt` step is required.
+
+ARG BASE_IMAGE=download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+FROM ${BASE_IMAGE}
+
+USER root
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Public PyPI: the base image's default index (download.t-head.cn artifactory)
+# returns 403 for common build packages such as cmake/packaging, so pin pypi.org.
+ARG PIP_INDEX_URL=https://pypi.org/simple
+
+# PCCL is distributed separately from SAIL SDK v2.2. Resolution order:
+#   1) use the PCCL already bundled in the base image (pccl.h + libpccl.so under
+#      $PCCL_HOME) when present -- the default for the hggcrt3 SDK v2.2 image;
+#   2) otherwise, if PCCL_URL is supplied, download that package and extract it
+#      into /usr/local (README: `tar zxf <pkg> -C /usr/local`);
+#   3) otherwise fail with instructions to fetch the matching package from the
+#      T-Head Developer Center: https://developer.t-head.cn/download/index.html
+#      (select by artifact type = PCCL library, version ${PCCL_VERSION}, hggcrt
+#      generation ${PCCL_HGGCRT} and OS ${PCCL_OS}, e.g. ${PCCL_TARBALL}).
+# No download link is hard-coded; pass one obtained from the portal via
+# `--build-arg PCCL_URL=<link>` only when the base image ships no PCCL.
+ARG PCCL_VERSION=2.2.0
+ARG PCCL_HGGCRT=hggcrt3
+ARG PCCL_OS=ubuntu2404
+ARG PCCL_TARBALL=pccl_${PCCL_HGGCRT}_${PCCL_OS}-v${PCCL_VERSION}.tar.gz
+ARG PCCL_URL=
+
+LABEL org.opencontainers.image.title="PyTorch-for-SAIL SDK v2.2 build environment" \
+      org.opencontainers.image.description="Toolchain and Python build deps to compile the PyTorch-for-SAIL 2.13 (SAIL / hggcrt3) wheel"
+
+# SAIL native build defaults. PCCL is distributed separately from SDK v2.2 and
+# lives at /usr/local/pccl in this image (no nccl_wrapper: pure SAIL, no CUDA
+# compat layer). PYTORCH_SAIL_ARCH defaults to the dual-architecture mix.
+# USE_PCCL / USE_FLASH_ATTENTION / USE_MEM_EFF_ATTENTION mirror README's build
+# (setup.py already defaults them the same under USE_SAIL; set explicitly for
+# clarity and to guard against upstream default drift). PYTORCH_BUILD_VERSION is
+# 2.13.0, derived from version.txt (2.13.0a0); it must match the tree's major
+# version or the stable-ABI shim macros drift and the build fails. BUILD_TEST is
+# left unset on purpose (setup.py defaults it to 0 for a lean build).
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_ROOT_USER_ACTION=ignore \
+    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PPU_SDK=/usr/local/PPU_SDK \
+    PCCL_HOME=/usr/local/pccl \
+    PCCL_INCLUDE_DIR=/usr/local/pccl/include \
+    PCCL_LIB_DIR=/usr/local/pccl/lib \
+    USE_SAIL=1 \
+    USE_PCCL=1 \
+    USE_FLASH_ATTENTION=1 \
+    USE_MEM_EFF_ATTENTION=1 \
+    PYTORCH_SAIL_ARCH="ppu_10;ppu_15" \
+    PYTORCH_VERSION=2.13.0 \
+    PYTORCH_BUILD_VERSION=2.13.0 \
+    PYTORCH_BUILD_NUMBER=0
+
+# cmake (>=3.27), ninja and ccache come from APT; the pip index lacks cmake.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        ccache \
+        cmake \
+        git \
+        ninja-build \
+        patch \
+        pkg-config \
+        libopenblas-dev \
+        libjpeg-dev \
+        libpng-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global --add safe.directory '*'
+
+# Ensure a matching PCCL is present: prefer the copy bundled in the base image;
+# else download from a portal-provided PCCL_URL; else fail with instructions to
+# get the package from https://developer.t-head.cn/download/index.html .
+RUN set -eux; \
+    if [ -f "${PCCL_INCLUDE_DIR}/pccl.h" ] && [ -e "${PCCL_LIB_DIR}/libpccl.so" ]; then \
+        echo "PCCL: using the copy bundled in the base image (${PCCL_HOME})"; \
+    elif [ -n "${PCCL_URL:-}" ]; then \
+        tarball="/tmp/${PCCL_TARBALL}"; \
+        curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o "${tarball}" "${PCCL_URL}"; \
+        tar zxf "${tarball}" -C /usr/local; \
+        rm -f "${tarball}"; \
+        echo "PCCL ${PCCL_VERSION} installed from the portal-provided URL"; \
+    else \
+        echo "ERROR: no PCCL in the base image and PCCL_URL is empty." >&2; \
+        echo "Download the matching PCCL package from https://developer.t-head.cn/download/index.html" >&2; \
+        echo "  artifact type: PCCL library; version ${PCCL_VERSION}; hggcrt ${PCCL_HGGCRT}; OS ${PCCL_OS}" >&2; \
+        echo "  e.g. ${PCCL_TARBALL}; extract with: tar zxf ${PCCL_TARBALL} -C /usr/local" >&2; \
+        echo "Then rebuild, or pass --build-arg PCCL_URL=<link obtained from the portal>." >&2; \
+        exit 1; \
+    fi; \
+    test -f "${PCCL_INCLUDE_DIR}/pccl.h"; \
+    test -e "${PCCL_LIB_DIR}/libpccl.so"; \
+    ls -l "${PCCL_LIB_DIR}"/libpccl.so*
+
+# Python build deps. Mirrors requirements-build.txt minus cmake/ninja (APT
+# provides them), plus the runtime libs setup.py imports while building the
+# wheel. NOTE: PyTorch 2.13 adopts PEP 639 license-files, which requires
+# setuptools>=77.0.0,<82 and packaging>=24.2; the base image ships setuptools
+# 75.8.0 and no packaging, so both are installed/upgraded here.
+RUN python3 -m pip install --no-cache-dir \
+        "setuptools>=77.0.0,<82" \
+        wheel \
+        numpy \
+        "packaging>=24.2" \
+        pyyaml \
+        requests \
+        six \
+        "typing-extensions>=4.15.0" \
+        "sympy>=1.13.3" \
+        "networkx>=2.5.1" \
+        jinja2 \
+        "fsspec>=0.8.5" \
+        filelock \
+        "optree>=0.13.0" \
+        expecttest \
+        hypothesis
+
+# Fail fast if the SDK v2.2 / PCCL layout, toolchain or PEP 639 build deps are
+# not as expected. The setuptools/packaging version assertions guard the 2.13
+# license-files requirement.
+RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
+    && source "${PCCL_HOME}/envsetup.sh" release >/dev/null \
+    && echo "hgcc: $(hgcc --version 2>&1 | head -1)" \
+    && echo "cmake: $(cmake --version | head -1)" \
+    && echo "ninja: $(ninja --version)" \
+    && python3 -c 'import numpy, packaging, yaml, setuptools, wheel; \
+from packaging.version import Version; \
+assert Version(setuptools.__version__) >= Version("77.0.0"), setuptools.__version__; \
+assert Version(setuptools.__version__) < Version("82"), setuptools.__version__; \
+assert Version(packaging.__version__) >= Version("24.2"), packaging.__version__; \
+print("python build deps OK (setuptools " + setuptools.__version__ + ", packaging " + packaging.__version__ + ")")'
+
+WORKDIR /workspace/pytorch
+CMD ["/bin/bash"]
