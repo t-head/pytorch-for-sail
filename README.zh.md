@@ -198,6 +198,55 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 
 `.sailify_done` 标记可避免重复转换。源码更新后会自动触发重新生成，也可在阶段 1 设置 `SAILIFY_FORCE=1` 强制重新生成。Sailify 向输出树复制文件时不会删除无关文件，因此存在陈旧产物风险时应使用新的输出目录。
 
+#### 编译方式三：Docker 构建环境（SDK v2.2）
+
+`Dockerfile.sail-sdk2.2` 在 T-Head SAIL SDK v2.2（`hggcrt3`）基础镜像之上构建一个可复用的环境镜像。它打包了工具链（CMake、Ninja、`hgcc`）、Python 构建依赖以及匹配的 PCCL，但不包含源码树，因此镜像保持精简，构建时通过 bind-mount 挂载仓库。基础镜像由 `BASE_IMAGE` 参数固定，可用 `--build-arg BASE_IMAGE=...` 覆盖。
+
+前置条件：
+
+- 已安装 Docker，并可联网拉取基础镜像 `download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005`。
+- 源码 checkout 已初始化全部 Git 子模块（`git submodule update --init --recursive`）。
+- 在大容量磁盘上准备一个临时目录（数十 GB 空闲），用于存放源树外构建产物与 wheel。
+- 编译 wheel 不需要 PPU 设备，仅运行时需要。
+
+**步骤 1 —— 构建环境镜像。** 构建上下文可以为空（该 Dockerfile 不 COPY 任何内容），因此将 Docker 指向一个空目录，避免把数 GB 源码树传给守护进程：
+
+```bash
+docker build -f Dockerfile.sail-sdk2.2 -t pytorch-sail-buildenv:2.13-sdk2.2 <empty-dir>
+```
+
+**步骤 2 —— 编译 wheel**：通过 bind-mount 挂载源码树与临时目录，源树外转换编译，源码树保持不变：
+
+```bash
+docker run --rm --name sail-build-v213 \
+  -v "$PWD":/workspace/pytorch \
+  -v /path/on/big/disk/sail-build:/workspace/sail-build \
+  -e SAILIFY_OUTPUT_DIR=/workspace/sail-build \
+  -e MAX_JOBS=128 \
+  pytorch-sail-buildenv:2.13-sdk2.2 \
+  bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
+            cd /workspace/pytorch && python3 setup.py sailify && \
+            cd "$SAILIFY_OUTPUT_DIR" && python3 setup.py bdist_wheel'
+```
+
+wheel 输出到宿主机 `/path/on/big/disk/sail-build/dist/torch-2.13.0-cp312-cp312-linux_x86_64.whl`（约 380 MB）。在多核宿主机上完整构建约需 20-30 分钟，并以 `0 FAILED` 结束。`dist/` 目录可能还包含转换时从源码树拷入的旧 wheel，请通过文件时间戳确认产物新鲜度。
+
+**步骤 3 —— 安装并冒烟测试**（在挂载了 PPU 设备的宿主机上）：
+
+```bash
+python3 -m pip install /path/on/big/disk/sail-build/dist/torch-*.whl
+source /usr/local/pccl/envsetup.sh release
+python3 -c "import torch; print(torch.__version__, torch.version.sail, torch.cuda.is_available())"
+```
+
+说明：
+
+- `SAILIFY_OUTPUT_DIR` 必须指向挂载源码树之外的位置；省略它会选择原地转换，从而改写被 bind-mount 的仓库。
+- 镜像会将 `setuptools` 升级到 `>=77.0.0,<82` 并安装 `packaging>=24.2`，这是 PyTorch 2.13 的 PEP 639 许可证打包所要求的；基础镜像自带的 `setuptools` 版本较旧且没有 `packaging`。
+- PCCL：镜像在基础镜像自带 PCCL 时优先使用它。若基础镜像未提供，请从 [T-Head 开发者中心](https://developer.t-head.cn/download/index.html) 下载匹配的包，并在构建镜像时通过 `--build-arg PCCL_URL=<link>` 传入链接。Dockerfile 中不硬编码任何下载链接。
+- `MAX_JOBS` 不固化进镜像；请每次运行时传入，并按宿主机 CPU 与内存调整。追加 `-e BUILD_TEST=1` 可同时构建 C++ 测试目标。
+- 编译 wheel 不需要 PPU 设备，运行时需要：启动运行时容器请挂载 PPU 设备节点（例如 `--device=/dev/alixpu_ctl --device=/dev/alixpu`）。
+
 #### 常用构建变量
 
 | 变量 | 示例值 | 说明 |
