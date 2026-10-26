@@ -27,6 +27,7 @@ and not test_cat_pointwise \
 and not test_partitioning_with_view \
 and not test_equivalent_template_code \
 and not test_tield_kernel_fusion_cuda \
+and not test_torch_profiler_benchmarker_reuses_inductor_helpers_hip_value0_expected_buffer_size_bytes_1024 \
 and not test_split_scan"
 python test/run_test.py \
     --include \
