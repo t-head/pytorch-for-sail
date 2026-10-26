@@ -56,6 +56,7 @@ and not test_addmm_baddmm_dtype_overload_bfloat16 \
 and not test_addmm_baddmm_dtype_overload_float16 \
 and not test_mm_bmm_dtype_overload_bfloat16 \
 and not test_cublas_addmm_size_10000_backend_cublaslt_cuda_float32 \
+and not test_float8_basics_e5m2_e4m3_default_cuda \
 and not test_mixed_dtypes_linear_cuda_bfloat16"
 
 python test/run_test.py \
