@@ -135,6 +135,16 @@ class ProgressLog:
                 counts[p[2]] = counts.get(p[2], 0) + 1
         return counts
 
+    def failed_cases(self) -> list:
+        """(nodeid, status) of cases not in OK_STATUSES, first result wins as in status_counts."""
+        failed, seen = [], set()
+        for p in self._lines():
+            if p[0] == self.RESULT and len(p) >= 3 and p[1] not in seen:
+                seen.add(p[1])
+                if p[2] not in OK_STATUSES:
+                    failed.append((p[1], p[2]))
+        return failed
+
     def remove(self) -> None:
         if os.path.exists(self.path):
             os.remove(self.path)
@@ -436,6 +446,12 @@ def _print_summary(log: ProgressLog) -> dict:
         rate = counts[status] / total * 100
         print(f"  {status:<16} {counts[status]:>6}  ({rate:5.1f}%)")
     print("=========================================")
+    failed = log.failed_cases()
+    if failed:
+        print(f"\n================ FAILED CASES ({len(failed)}) ================")
+        for nodeid, status in sorted(failed, key=lambda x: (x[1], x[0])):
+            print(f"  {status:<6} {nodeid}")
+        print("=========================================")
     return counts
 
 
