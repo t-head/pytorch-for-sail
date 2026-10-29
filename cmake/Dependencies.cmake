@@ -1816,10 +1816,17 @@ endif()
 
 if(USE_KINETO)
   if(USE_SAIL)
-    # Kineto has no native PPU backend. Reusing its CUDA backend would invoke
-    # FindCUDAToolkit and require nvcc/CUPTI, which are absent in a SAIL build.
-    set(KINETO_BACKEND "cpu" CACHE STRING "" FORCE)
-    message(STATUS "Using CPU-only version of Kineto for PPU SAIL")
+    # PPU SAIL: sailify rewrites Kineto's CUPTI backend to the native hgpti
+    # API, and hg_native.cmake maps CUDA::cupti -> libhgpti.so and
+    # CUDA::cudart -> libhggcrt. No CUDA toolkit layout is needed, so the
+    # CUPTI backend can be enabled whenever those targets are present.
+    if(TARGET CUDA::cupti AND TARGET CUDA::cudart)
+      set(KINETO_BACKEND "cuda" CACHE STRING "" FORCE)
+      message(STATUS "Using Kineto CUPTI (hgpti) backend for PPU SAIL")
+    else()
+      set(KINETO_BACKEND "cpu" CACHE STRING "" FORCE)
+      message(STATUS "Using CPU-only version of Kineto for PPU SAIL")
+    endif()
   elseif(USE_CUDA)
     set(KINETO_BACKEND "cuda" CACHE STRING "" FORCE)
     message(STATUS "Using Kineto with CUPTI support")
