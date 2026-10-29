@@ -1796,6 +1796,27 @@ def apply_fa_num_splits_patch(num_splits_patch: str, fa_root: str) -> None:
     apply_patch(num_splits_patch, fa_root)
 
 
+def apply_kineto_sail_patch(patch_file: str, kineto_root: str) -> None:
+    """Allow SAIL builds to reuse pre-created CUDA::cupti/cudart targets.
+
+    In a T-Head SAIL build container, hg_native.cmake creates CMake imported
+    targets ``CUDA::cupti`` and ``CUDA::cudart`` that map to ``libhgpti.so``
+    and ``libhggcrt``.  Skip the mandatory ``find_package(CUDAToolkit)`` probe
+    when those targets are already present, otherwise configure fails for lack
+    of nvcc/CUDA toolkit layout.
+    """
+    cmake_lists = Path(kineto_root, "libkineto", "CMakeLists.txt")
+    if (
+        cmake_lists.is_file()
+        and "PPU SAIL: skip CUDAToolkit probe" in cmake_lists.read_text(
+            encoding="utf-8", errors="replace"
+        )
+    ):
+        print("kineto SAIL CMake patch already applied, skipping.")
+        return
+    apply_patch(patch_file, kineto_root)
+
+
 def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
     return FileNotFoundError(
         "Required third-party source is missing: "
@@ -2388,6 +2409,13 @@ def main() -> None:
             )
             apply_fa_namespace_patch(fa_namespace_patch, fa_root)
             apply_fa_num_splits_patch(fa_num_splits_patch, fa_root)
+
+        kineto_root = os.path.join(patch_root, "kineto")
+        if os.path.exists(kineto_root):
+            kineto_patch_file = os.path.join(
+                patch_root, "kineto_libkineto_cmake_sail.patch"
+            )
+            apply_kineto_sail_patch(kineto_patch_file, kineto_root)
 
         # SAIL-only branch: the cudafy (CUDA-compatible) patch path is disabled.
         # else:
