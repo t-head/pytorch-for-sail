@@ -21,6 +21,7 @@ BUILD_START=$(date +%s)
 
 USE_SAIL=1 \
 PYTORCH_SAIL_ARCH="ppu_10;ppu_15" \
+SAILIFY_IGNORES="**/third_party/cutlass2/examples/common/accutlass.h" \
 USE_PCCL=1 \
 USE_FLASH_ATTENTION=1 \
 USE_MEM_EFF_ATTENTION=1 \
