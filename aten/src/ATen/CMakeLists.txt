@@ -187,10 +187,20 @@ file(GLOB native_transformers_hip_cpp CONFIGURE_DEPENDS "native/transformers/hip
 file(GLOB native_transformers_xpu_cpp CONFIGURE_DEPENDS "native/transformers/xpu/*.cpp")
 file(GLOB native_quantized_cudnn_hip_cpp CONFIGURE_DEPENDS "native/quantized/cudnn/hip/*.cpp")
 file(GLOB native_utils_cpp CONFIGURE_DEPENDS "native/utils/*.cpp")
-file(GLOB flash_attention_cuda_kernels_cu CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cu)
-file(GLOB flash_attention_cuda_cpp CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src/*.cpp)
-file(GLOB native_flash_attn_api_cpp CONFIGURE_DEPENDS "native/transformers/cuda/flash_attn/flash_api.cpp")
-
+# Flash-attention sources are optional and must not be discovered when disabled.
+if(USE_FLASH_ATTENTION)
+  file(GLOB flash_attention_cuda_kernels_cu CONFIGURE_DEPENDS ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cu)
+  # Flash attention C++ sources
+  if(USE_PPU)
+    file(GLOB flash_attention_cuda_cpp CONFIGURE_DEPENDS
+        "${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cpp"
+        "${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/flash_api.cpp"
+    )
+  else()
+    file(GLOB flash_attention_cuda_cpp CONFIGURE_DEPENDS ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*.cpp)
+    file(GLOB native_flash_attn_api_cpp CONFIGURE_DEPENDS "native/transformers/cuda/flash_attn/flash_api.cpp")
+  endif()
+endif()
 
 # flash_attention hip sources
 file(GLOB flash_attention_hip_hip CONFIGURE_DEPENDS "native/transformers/hip/flash_attn/*.hip")
@@ -329,19 +339,31 @@ if(USE_FLASH_ATTENTION)
   file(GLOB flash_attention_src_hip_hip CONFIGURE_DEPENDS "native/transformers/hip/flash_attn/src/*.hip")
 endif()
 
+
 #Mem_eff attention sources
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
+  message(STATUS "Compile Both Opensource Mem_efficient kernels and PPU Mem_efficient kernels")
+  file(GLOB mem_eff_attention_cuda_kernels_cu CONFIGURE_DEPENDS "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
+endif()
+
 file(GLOB mem_eff_attention_cuda_cu CONFIGURE_DEPENDS "native/transformers/cuda/mem_eff_attention/*.cu")
-file(GLOB mem_eff_attention_cuda_kernels_cu CONFIGURE_DEPENDS "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
 file(GLOB mem_eff_attention_cuda_cpp CONFIGURE_DEPENDS "native/transformers/cuda/mem_eff_attention/*.cpp")
 
-if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
+# SAIL FA v2.7.2 lacks function definitions for hdim224, so compilation is disabled.
+# The open-source version has the same issue.
+if(USE_PPU AND USE_FLASH_ATTENTION)
+  file(GLOB hdim224_kernels_cu ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src/*hdim224*.cu)
+  list(REMOVE_ITEM flash_attention_cuda_kernels_cu ${hdim224_kernels_cu})
+endif()
+
+if(USE_CUDA AND (USE_FLASH_ATTENTION))
   add_library(flash_attention OBJECT EXCLUDE_FROM_ALL ${flash_attention_cuda_kernels_cu} ${flash_attention_cuda_cpp})
 
   target_include_directories(flash_attention SYSTEM PUBLIC
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/include
-    ${PROJECT_SOURCE_DIR}/third_party/cutlass/include
-    ${PROJECT_SOURCE_DIR}/third_party/flash-attention/csrc/flash_attn/src
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc
+    ${TORCH_FLASH_ATTENTION_ROOT}/include
+    ${TORCH_CUTLASS_ROOT}/include
+    ${TORCH_FLASH_ATTENTION_ROOT}/csrc/flash_attn/src
   )
 
   target_compile_definitions(flash_attention PRIVATE
@@ -363,7 +385,13 @@ if(USE_CUDA AND (USE_FLASH_ATTENTION OR USE_MEM_EFF_ATTENTION))
 endif()
 
 if(USE_FLASH_ATTENTION)
-  list(APPEND native_transformers_cuda_cpp ${native_flash_attn_api_cpp})
+  if(USE_PPU)
+
+    list(APPEND native_transformers_cuda_cu ${flash_attention_cuda_kernels_cu})
+    list(APPEND native_transformers_cuda_cpp ${flash_attention_cuda_cpp})
+  else()
+    list(APPEND native_transformers_cuda_cpp ${native_flash_attn_api_cpp})
+  endif()
   list(APPEND ATen_ATTENTION_KERNEL_SRCS ${flash_attention_cuda_kernels_cu})
 
   list(APPEND native_transformers_hip_hip ${flash_attention_hip_hip})
@@ -372,11 +400,65 @@ if(USE_FLASH_ATTENTION)
 endif()
 
 if(USE_MEM_EFF_ATTENTION)
+  # For non-SAIL, use open source mem_eff_attention kernels
+  # For SAIL, xformers_ppu shared library is used instead (added via add_subdirectory)
+  if(NOT USE_PPU)
+    file(GLOB mem_eff_attention_cuda_kernels_cu "native/transformers/cuda/mem_eff_attention/kernels/*.cu")
+  endif()
+
   list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_cu})
   list(APPEND native_transformers_cuda_cu ${mem_eff_attention_cuda_kernels_cu})
   list(APPEND native_transformers_cuda_cpp ${mem_eff_attention_cuda_cpp})
   list(APPEND MEM_EFF_ATTENTION_CUDA_SOURCES ${native_transformers_cuda_cu} ${mem_eff_attention_cuda_cu} ${mem_eff_attention_cuda_kernels_cu})
+  list(APPEND PPU_MEM_EFF_ATTENTION_CUDA_SOURCES ${mem_eff_attention_cuda_cu} ${mem_eff_attention_cuda_kernels_cu})
   list(APPEND ATen_ATTENTION_KERNEL_SRCS ${mem_eff_attention_cuda_kernels_cu})
+endif()
+
+# SAIL: Add xformers shared library only when memory-efficient attention is enabled.
+# The xformers root differs per SAIL build mode (CUDA-compatible uses the
+# CUDA-compatible fork at third_party/xformers; SAIL native uses
+# t-head/xformers-for-sail); TORCH_XFORMERS_ROOT is set in the top-level
+# CMakeLists.txt.
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
+  add_subdirectory(${TORCH_XFORMERS_ROOT} ${CMAKE_BINARY_DIR}/xformers_ppu)
+  # The SAIL xformers target compiles CUDA implementations only. Add the
+  # host-side dispatcher schemas from the parent build to avoid modifying the
+  # xformers submodule and leaving registered implementations without schemas.
+  if(TARGET xformers_ppu)
+    # xformers applies this HG-only option target-wide. Restrict it before
+    # adding the host C++ schema source below.
+    get_target_property(_xformers_ppu_options xformers_ppu COMPILE_OPTIONS)
+    list(REMOVE_ITEM _xformers_ppu_options "--use_fast_math")
+    set_property(TARGET xformers_ppu PROPERTY COMPILE_OPTIONS
+      "${_xformers_ppu_options}")
+    target_compile_options(xformers_ppu PRIVATE
+      $<$<COMPILE_LANGUAGE:HG>:--use_fast_math>)
+    target_sources(xformers_ppu PRIVATE
+      ${TORCH_XFORMERS_ROOT}/xformers/csrc/attention/attention.cpp)
+  endif()
+  # Note: Include paths are set in the xformers root CMakeLists.txt
+
+  # Add xformers include paths for attention.cu compilation
+  # This must be done AFTER add_subdirectory(xformers) so XFORMERS_PPU_INCLUDE_DIRS is available
+  if(USE_MEM_EFF_ATTENTION AND DEFINED XFORMERS_PPU_INCLUDE_DIRS)
+    list(APPEND ATen_CUDA_INCLUDE ${XFORMERS_PPU_INCLUDE_DIRS})
+  endif()
+endif()
+
+# SAIL: Link xformers shared library to ATen CUDA
+if(USE_PPU AND USE_MEM_EFF_ATTENTION)
+  # The xformers_ppu library is already built as a shared library in third_party/xformers
+  # We just need to link against it, not re-include its sources
+  if(TARGET xformers_ppu)
+    # Add xformers_ppu to CUDA dependencies (this is a pre-compiled shared library)
+    list(APPEND ATen_CUDA_DEPENDENCY_LIBS xformers_ppu)
+
+    # Add SAIL library paths to link directories for ATen
+    # These paths are exported from third_party/xformers/CMakeLists.txt
+    if(DEFINED XFORMERS_PPU_LIB_PATHS)
+      link_directories(${XFORMERS_PPU_LIB_PATHS})
+    endif()
+  endif()
 endif()
 
 # MSLK
@@ -835,8 +917,8 @@ if(USE_CUDA AND NOT USE_ROCM)
   add_definitions(-DCUTLASS_ENABLE_TENSOR_CORE_MMA=1)
   add_definitions(-DCUTLASS_ENABLE_SM90_EXTENDED_MMA_SHAPES=1)
   add_definitions(-DCUTE_SM90_EXTENDED_MMA_SHAPES_ENABLED)
-  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass/include)
-  list(APPEND ATen_CUDA_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/cutlass/tools/util/include)
+  list(APPEND ATen_CUDA_INCLUDE ${TORCH_CUTLASS_ROOT}/include)
+  list(APPEND ATen_CUDA_INCLUDE ${TORCH_CUTLASS_ROOT}/tools/util/include)
 
   if($ENV{ATEN_STATIC_CUDA})
     if(CUDA_VERSION VERSION_LESS_EQUAL 12.9)
@@ -851,7 +933,7 @@ if(USE_CUDA AND NOT USE_ROCM)
           CUDA::cufft_static)
     endif()
 
-   if(NOT BUILD_LAZY_CUDA_LINALG)
+   if(NOT BUILD_LAZY_CUDA_LINALG AND NOT USE_SAIL)
      list(APPEND ATen_CUDA_DEPENDENCY_LIBS
        CUDA::cusolver_static
        ${CUDAToolkit_LIBRARY_DIR}/libcusolver_lapack_static.a     # needed for libcusolver_static
@@ -881,22 +963,21 @@ if(USE_CUDA AND NOT USE_ROCM)
   endif($ENV{ATEN_STATIC_CUDA})
 endif()
 
-
-  if(USE_MAGMA)
-    if(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
-      list(APPEND ATen_CUDA_DEPENDENCY_LIBS torch::magma)
-    endif(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
-    if(USE_ROCM)
-      list(APPEND ATen_HIP_DEPENDENCY_LIBS torch::magma)
-    endif(USE_ROCM)
-    if(MSVC)
-      if($ENV{TH_BINARY_BUILD})
-        # Do not do this on Linux: see Note [Extra MKL symbols for MAGMA in torch_cpu]
-        # in caffe2/CMakeLists.txt
-        list(APPEND ATen_CUDA_DEPENDENCY_LIBS ${BLAS_LIBRARIES})
-      endif($ENV{TH_BINARY_BUILD})
-    endif(MSVC)
-  endif(USE_MAGMA)
+if(USE_MAGMA)
+  if(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
+    list(APPEND ATen_CUDA_DEPENDENCY_LIBS torch::magma)
+  endif(USE_CUDA AND NOT BUILD_LAZY_CUDA_LINALG)
+  if(USE_ROCM)
+    list(APPEND ATen_HIP_DEPENDENCY_LIBS torch::magma)
+  endif(USE_ROCM)
+  if(MSVC)
+    if($ENV{TH_BINARY_BUILD})
+      # Do not do this on Linux: see Note [Extra MKL symbols for MAGMA in torch_cpu]
+      # in caffe2/CMakeLists.txt
+      list(APPEND ATen_CUDA_DEPENDENCY_LIBS ${BLAS_LIBRARIES})
+    endif($ENV{TH_BINARY_BUILD})
+  endif(MSVC)
+endif(USE_MAGMA)
 
 # Include CPU paths for CUDA/HIP as well
 list(APPEND ATen_CUDA_INCLUDE ${ATen_CPU_INCLUDE})
@@ -1079,4 +1160,5 @@ set(ATen_CUDA_DEPENDENCY_LIBS ${ATen_CUDA_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(ATen_XPU_DEPENDENCY_LIBS ${ATen_XPU_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(ATen_HIP_DEPENDENCY_LIBS ${ATen_HIP_DEPENDENCY_LIBS} PARENT_SCOPE)
 set(MEM_EFF_ATTENTION_CUDA_SOURCES ${MEM_EFF_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
+set(PPU_MEM_EFF_ATTENTION_CUDA_SOURCES ${PPU_MEM_EFF_ATTENTION_CUDA_SOURCES} PARENT_SCOPE)
 set(ATen_ATTENTION_KERNEL_SRCS ${ATen_ATTENTION_KERNEL_SRCS} PARENT_SCOPE)

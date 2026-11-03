@@ -152,6 +152,11 @@ set(_ENV_PASSTHROUGH
   TORCH_CUDA_ARCH_LIST
   TORCH_XPU_ARCH_LIST
   TRACING_BASED
+  PYTORCH_SAIL_ARCH
+  SAILIFY_OUTPUT_DIR
+  PCCL_ROOT
+  PCCL_INCLUDE_DIR
+  PCCL_LIB_DIR
 )
 
 # Low-priority aliases: if the canonical var is not set, use the alias.
