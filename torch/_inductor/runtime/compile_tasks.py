@@ -76,6 +76,16 @@ def _set_triton_libdevice_path_impl() -> None:
     if torch.version.cuda is None:
         return
 
+    # SAIL has no CUDA toolkit libdevice bitcode; pointing TRITON_LIBDEVICE_PATH
+    # at it makes every libdevice call unresolvable on the SAIL backend
+    # (__ppu_* undefined symbols). Keep Triton's default libdevice handling.
+
+    if (
+        getattr(torch.version, "ppu", None)
+        or getattr(torch.version, "sail", None) is not None
+    ):
+        return
+
     try:
         from triton import knobs
     except ImportError:
