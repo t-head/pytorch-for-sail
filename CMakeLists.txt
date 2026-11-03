@@ -292,8 +292,18 @@ else()
   set(_USE_CUDA_EXPLICITLY_SET FALSE)
 endif()
 
+option(USE_PPU "Build for PPU" ON)
+cmake_dependent_option(
+  USE_ELEMENTWISE_OPT "Build PPU elementwise optimization kernels" ON
+  "USE_PPU" OFF)
 # CUDA is incompatible with TSAN
 cmake_dependent_option(USE_CUDA "Use CUDA" ON "NOT USE_TSAN" OFF)
+# SAIL reuses the CUDA build graph while linking the native PPU SDK.
+option(USE_SAIL "PPU: use native PPU SDK instead of CUDA compatibility layer" OFF)
+if(USE_SAIL)
+  set(USE_PPU ON CACHE BOOL "Build for PPU (forced ON by USE_SAIL)" FORCE)
+  set(USE_CUDA ON CACHE BOOL "Use CUDA (forced ON by USE_SAIL)" FORCE)
+endif()
 
 # If USE_XPU is already defined in cache, it means user explicitly set it
 if(DEFINED CACHE{USE_XPU})
@@ -341,6 +351,15 @@ cmake_dependent_option(USE_SYSTEM_NCCL "Use system-wide NCCL" OFF "USE_NCCL"
 # Builds NCCL-EP if true.
 cmake_dependent_option(USE_NCCL_EP "Build NCCL EP contrib library" OFF
                        "USE_NCCL;USE_CUDA" OFF)
+cmake_dependent_option(USE_PCCL "Use native PCCL for SAIL distributed communication" ON
+                       "USE_SAIL;USE_DISTRIBUTED;UNIX;NOT APPLE" OFF)
+if(USE_SAIL)
+  # SAIL always uses native PCCL for distributed communication. Preserve the
+  # upstream NCCL C++/CMake compatibility boundary without exposing it as a
+  # separate SAIL-facing selection.
+  set(USE_PCCL ON CACHE BOOL "Native PCCL enabled by USE_SAIL" FORCE)
+  set(USE_NCCL ON CACHE BOOL "NCCL compatibility enabled by USE_PCCL" FORCE)
+endif()
 cmake_dependent_option(USE_NVSHMEM "Use NVSHMEM" ON
                        "USE_DISTRIBUTED;USE_CUDA OR USE_ROCM;UNIX;NOT APPLE" OFF)
 option(USE_NNPACK "Use NNPACK" ON)
@@ -448,6 +467,35 @@ endif()
 cmake_dependent_option(USE_PRIORITIZED_TEXT_FOR_LD "Use prioritized text linker for ld."
   "${USE_PRIORITIZED_TEXT_DEFAULT}" "CPU_INTEL OR CPU_AARCH64 OR CPU_POWER" OFF)
 
+if(USE_PPU)
+  add_definitions(-DUSE_PPU)
+  add_definitions(-DUSE_HGGC)
+  add_definitions(-DHAS_PYTORCH)
+  add_definitions(-DUSE_PYTORCH_SDPA)
+  if(USE_SAIL)
+    # SAIL dependencies are layout-compatible replacements for their CUDA
+    # counterparts, kept under dedicated third_party slots so the upstream
+    # submodules stay pristine (pytorch-for-sail#1).
+    # SAIL native mode: sailify converts the whole tree
+    # (including these forks) in a derived tree before cmake runs, so the
+    # roots point at the PPU-original forks in the build tree.
+    add_definitions(-DUSE_SAIL)
+    message(STATUS "PPU build mode: SAIL (native PPU SDK)")
+    set(TORCH_FLASH_ATTENTION_ROOT "${PROJECT_SOURCE_DIR}/third_party/flash-attention-for-sail")
+    set(TORCH_CUTLASS_ROOT "${PROJECT_SOURCE_DIR}/third_party/actlize")
+    set(TORCH_XFORMERS_ROOT "${PROJECT_SOURCE_DIR}/third_party/xformers-for-sail")
+  else()
+    # The CUDA-compatible SAIL mode (USE_PPU=ON with USE_SAIL=OFF) is not part
+    # of this tree; it lives in a downstream branch that adds
+    # flex-flash-attention, cudafy-for-sail and the xformers SAIL fork.
+    message(FATAL_ERROR
+      "USE_PPU=ON requires USE_SAIL=ON in this tree. "
+      "The CUDA-compatible mode is provided by a separate branch.")
+  endif()
+else()
+  set(TORCH_FLASH_ATTENTION_ROOT "${PROJECT_SOURCE_DIR}/third_party/flash-attention")
+  set(TORCH_CUTLASS_ROOT "${PROJECT_SOURCE_DIR}/third_party/cutlass")
+endif()
 option(USE_MIMALLOC "Use mimalloc" OFF)
 # Enable third party mimalloc library to improve memory allocation performance
 # on Windows and AArch64.
@@ -1124,10 +1172,12 @@ endif()
 if(NOT MSVC)
   string(APPEND CMAKE_CXX_FLAGS " -O2 -fPIC")
 
-  # This prevents use of `c10::optional`, `c10::nullopt` etc within the codebase
-  string(APPEND CMAKE_CXX_FLAGS " -DC10_NODEPRECATED")
-  string(APPEND CMAKE_CUDA_FLAGS " -DC10_NODEPRECATED")
-  string(APPEND CMAKE_OBJCXX_FLAGS " -DC10_NODEPRECATED")
+  if(NOT USE_PPU)
+    # This prevents use of `c10::optional`, `c10::nullopt` etc within the codebase
+    string(APPEND CMAKE_CXX_FLAGS " -DC10_NODEPRECATED")
+    string(APPEND CMAKE_CUDA_FLAGS " -DC10_NODEPRECATED")
+    string(APPEND CMAKE_OBJCXX_FLAGS " -DC10_NODEPRECATED")
+  endif()
 
   # Eigen fails to build with some versions, so convert this to a warning
   # Details at http://eigen.tuxfamily.org/bz/show_bug.cgi?id=1459
@@ -1400,6 +1450,16 @@ if(BUILD_SHARED_LIBS)
           ${PROJECT_SOURCE_DIR}/cmake/public/LoadHIP.cmake
     DESTINATION share/cmake/Caffe2/public
     COMPONENT dev)
+  if(USE_SAIL)
+    install(
+      FILES ${PROJECT_SOURCE_DIR}/cmake/public/hg_native.cmake
+      DESTINATION share/cmake/Caffe2/public
+      COMPONENT dev)
+    install(
+      DIRECTORY ${PROJECT_SOURCE_DIR}/third_party/cmake-hgcc/cmake/Modules
+      DESTINATION share/cmake/Caffe2/cmake-hgcc
+      COMPONENT dev)
+  endif()
   install(
     DIRECTORY ${PROJECT_SOURCE_DIR}/cmake/Modules_CUDA_fix
     DESTINATION share/cmake/Caffe2/

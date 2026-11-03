@@ -396,9 +396,23 @@ if(CMAKE_COMPILER_IS_GNUCXX)
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/autograd/python_variable.cpp PROPERTIES COMPILE_FLAGS "-Wno-cast-function-type")
 endif()
 
-# Preserve CUDA_GENCODE flags
-if(USE_CUDA)
+# Preserve build architectures for cpp_extension JIT defaults. SAIL wheels
+# record native SAIL targets, while CUDA wheels retain their gencode flags.
+if(USE_SAIL)
+  if(DEFINED PYTORCH_SAIL_ARCH AND NOT PYTORCH_SAIL_ARCH STREQUAL "")
+    set(_PYTORCH_SAIL_ARCH "${PYTORCH_SAIL_ARCH}")
+  elseif(DEFINED ENV{PYTORCH_SAIL_ARCH} AND NOT "$ENV{PYTORCH_SAIL_ARCH}" STREQUAL "")
+    set(_PYTORCH_SAIL_ARCH "$ENV{PYTORCH_SAIL_ARCH}")
+  else()
+    # Match the default in ppu_select_hgcc_arch_flags (hg_native.cmake) so
+    # the wheel metadata and the compiled kernels stay in sync.
+    set(_PYTORCH_SAIL_ARCH "ppu_10;ppu_15")
+  endif()
+  string(REPLACE ";" " " PYTORCH_SAIL_ARCH_readable "${_PYTORCH_SAIL_ARCH}")
+  set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${PYTORCH_SAIL_ARCH_readable}\"")
+elseif(USE_CUDA)
   torch_cuda_get_nvcc_gencode_flag(_ARCH_FLAGS)
+  # NOTE: keep CUDA_ARCH_FLAGS empty on the CUDA path (matches pre-cherry-pick baseline). The nvcc gencode flags contain commas (e.g. -gencode arch=compute_80a,code=sm_80a) and C10_STRINGIZE(CUDA_ARCH_FLAGS) in torch/csrc/cuda/Module.cpp splits macro arguments on commas, breaking compilation with "passed 3 arguments, but takes just 1".
   set_source_files_properties(${TORCH_SRC_DIR}/csrc/cuda/Module.cpp PROPERTIES COMPILE_FLAGS "-DCUDA_ARCH_FLAGS=\"${_ARCH_FLAGS_readable}\"")
 endif()
 
@@ -530,6 +544,80 @@ if(CUDAToolkit_VERSION_MAJOR)
   set(CUDA_VERSION "${CUDAToolkit_VERSION_MAJOR}.${CUDAToolkit_VERSION_MINOR}")
 endif()
 
+# torch.version.ppu records the PPU SDK release version used by
+# CUDA-compatible SAIL builds. It differs from torch.version.cuda, which
+# records the CUDA compatibility version, and torch.version.sail, which
+# identifies SAIL builds.
+set(PPU_VERSION "")
+if(USE_PPU)
+  # Resolve the PPU SDK root with the same precedence as hg_native.cmake.
+  if(DEFINED ENV{PPU_SDK})
+    set(_ppu_sdk_root "$ENV{PPU_SDK}")
+  elseif(DEFINED ENV{PPU_HOME})
+    set(_ppu_sdk_root "$ENV{PPU_HOME}")
+  else()
+    set(_ppu_sdk_root "/usr/local/PPU_SDK")
+  endif()
+  set(_ppu_release_yaml "${_ppu_sdk_root}/release.yaml")
+  if(EXISTS "${_ppu_release_yaml}")
+    file(STRINGS "${_ppu_release_yaml}" _ppu_release_lines)
+    foreach(_ppu_line IN LISTS _ppu_release_lines)
+      if(_ppu_line MATCHES "^[ \t]*version:[ \t]*(.+)$")
+        string(STRIP "${CMAKE_MATCH_1}" PPU_VERSION)
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(PPU_VERSION STREQUAL "")
+    message(FATAL_ERROR
+      "PPU_VERSION is empty - the PPU SDK installation may be incomplete or "
+      "the SDK path is incorrect.\n"
+      "  Checked: ${_ppu_release_yaml}\n"
+      "  PPU_SDK root: ${_ppu_sdk_root}\n"
+      "Please verify that <PPU_SDK>/release.yaml exists and contains a "
+      "'version: X.Y.Z' line.")
+  endif()
+  message(STATUS "torch.version.ppu = ${PPU_VERSION} (from ${_ppu_release_yaml})")
+endif()
+
+# SAIL: expose torch.version.sail so runtime code can distinguish SAIL
+# (native PPU SDK / sailify) from CUDA-compatible and NVIDIA builds -- this
+# mirrors torch.version.hip for ROCm.
+set(SAIL_VERSION "")
+if(USE_SAIL)
+  # Resolve the PPU SDK root with the same precedence as hg_native.cmake.
+  if(DEFINED ENV{PPU_SDK})
+    set(_ppu_sdk_root "$ENV{PPU_SDK}")
+  elseif(DEFINED ENV{PPU_HOME})
+    set(_ppu_sdk_root "$ENV{PPU_HOME}")
+  else()
+    set(_ppu_sdk_root "/usr/local/PPU_SDK")
+  endif()
+  set(_ppu_release_yaml "${_ppu_sdk_root}/release.yaml")
+  if(EXISTS "${_ppu_release_yaml}")
+    # file(STRINGS) yields newline-stripped lines; take the value after "version:".
+    file(STRINGS "${_ppu_release_yaml}" _ppu_release_lines)
+    foreach(_ppu_line IN LISTS _ppu_release_lines)
+      if(_ppu_line MATCHES "^[ \t]*version:[ \t]*(.+)$")
+        string(STRIP "${CMAKE_MATCH_1}" SAIL_VERSION)
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(SAIL_VERSION STREQUAL "")
+    message(FATAL_ERROR
+      "SAIL_VERSION is empty — PPU SDK installation may be incomplete or "
+      "the SDK path is incorrect.\n"
+      "  Checked: ${_ppu_release_yaml}\n"
+      "  PPU_SDK root: ${_ppu_sdk_root}\n"
+      "Please verify that <PPU_SDK>/release.yaml exists and contains a "
+      "'version: X.Y.Z' line.")
+  endif()
+  message(STATUS "torch.version.sail = ${SAIL_VERSION} (from ${_ppu_release_yaml})")
+endif()
+
+# Compute CUDA/SAIL architecture flags for embedding in version info.
+torch_cuda_get_nvcc_gencode_flag(CUDA_ARCH_FLAGS)
 add_custom_target(
   gen_torch_version ALL
   "${Python_EXECUTABLE}" -m tools.generate_torch_version
@@ -538,6 +626,8 @@ add_custom_target(
     --hip-version=${HIP_VERSION_CLEAN}
     --rocm-version=${ROCM_VERSION_DEV}
     --xpu-version=${SYCL_COMPILER_VERSION}
+    --ppu-version=${PPU_VERSION}
+    --sail-version=${SAIL_VERSION}
   BYPRODUCTS ${TORCH_SRC_DIR}/version.py
   COMMENT "Regenerating version file..."
   WORKING_DIRECTORY ${TORCH_ROOT}
