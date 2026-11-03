@@ -67,8 +67,8 @@ cudnn_frontend::Tensor getTensorDescriptorWithTypeVirtual(
     const cudnnDataType_t dataType,
     const at::MemoryFormat memory_format,
     const bool _virtual) {
-#if defined(__linux__) && !defined(FBCODE_CAFFE2) && CUDNN_MAJOR == 8 && \
-    CUDNN_MINOR > 5
+#if defined(__linux__) && !defined(FBCODE_CAFFE2) && !defined(USE_SAIL) && \
+    CUDNN_MAJOR == 8 && CUDNN_MINOR > 5
   // Workaround for cudnn error handling deficiency, that results in a crash on
   // Ubuntu-22+ if `libnvrtc.so` is not found on the system, which strictly
   // speaking is not necessary for usecases below See

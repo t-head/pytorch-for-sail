@@ -43,6 +43,9 @@ extern "C" void nvshmem_init() __attribute__((weak));
 
 // Check if NVSHMEM is available
 bool is_nvshmem_available() {
+#if defined(USE_SAIL)
+  return false;
+#else
   // Runtime check
   static std::mutex mutex;
   static int is_available = -2;
@@ -67,6 +70,7 @@ bool is_nvshmem_available() {
     }
   }
   return is_available == 1;
+#endif
 }
 
 // Initializes the device state in CUmodule so that it’s able to perform NVSHMEM

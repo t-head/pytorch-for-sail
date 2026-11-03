@@ -39,6 +39,12 @@
 namespace cutlass {
 namespace arch {
 
+#if defined(USE_PPU) || defined(USE_SAIL)
+// SAIL CUTLASS exposes PPU0010, while these ATen CUTLASS extensions dispatch
+// the Ampere mixed-GEMM path through the CUDA-compatible Sm80 tag.
+using Sm80 = PPU0010;
+#endif
+
 // Tag which triggers MMA which will trigger
 struct OpMultiplyAddDequantizeInterleavedBToA;
 

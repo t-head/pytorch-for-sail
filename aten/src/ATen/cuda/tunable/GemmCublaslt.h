@@ -494,7 +494,7 @@ struct CublasltAlgoConfig {
   uint32_t reduction = 0;
   uint32_t swizzle = 0;
   uint32_t custom = 0;
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
+#if !defined(USE_PPU) && defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
   uint16_t inner_shape = 0;
   uint16_t cluster_shape = 0;
 #endif
@@ -527,7 +527,7 @@ inline std::optional<CublasltAlgoConfig> CublasltAlgoConfigFromAlgo(
           &algo, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING, &config.swizzle) &&
       CublasltGetAlgoConfigAttribute(
           &algo, CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION, &config.custom);
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
+#if !defined(USE_PPU) && defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
   ok = ok &&
       CublasltGetAlgoConfigAttribute(
           &algo, CUBLASLT_ALGO_CONFIG_INNER_SHAPE_ID, &config.inner_shape) &&
@@ -550,7 +550,7 @@ inline std::string CublasltAlgoConfigName(const CublasltAlgoConfig& config) {
       config.reduction,
       config.swizzle,
       config.custom);
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
+#if !defined(USE_PPU) && defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
   name += fmt::sprintf(
       "_inner_%hu_cluster_%hu", config.inner_shape, config.cluster_shape);
 #endif
@@ -560,7 +560,7 @@ inline std::string CublasltAlgoConfigName(const CublasltAlgoConfig& config) {
 inline std::optional<CublasltAlgoConfig> CublasltAlgoConfigFromName(
     const std::string& name) {
   CublasltAlgoConfig config;
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
+#if !defined(USE_PPU) && defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
   int matched = std::sscanf(
       name.c_str(),
       "Gemm_Cublaslt_id_%d_tile_%u_stages_%u_splitk_%d_red_%u_swizzle_%u_custom_%u"
@@ -636,7 +636,7 @@ bool CublasltInitializeAlgo(
           algo, CUBLASLT_ALGO_CONFIG_CTA_SWIZZLING, config.swizzle) &&
       CublasltSetAlgoConfigAttribute(
           algo, CUBLASLT_ALGO_CONFIG_CUSTOM_OPTION, config.custom);
-#if defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
+#if !defined(USE_PPU) && defined(CUBLAS_VERSION) && CUBLAS_VERSION >= 12000
   ok = ok &&
       CublasltSetAlgoConfigAttribute(
           algo, CUBLASLT_ALGO_CONFIG_INNER_SHAPE_ID, config.inner_shape) &&
