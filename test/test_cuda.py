@@ -2193,6 +2193,15 @@ if __name__ == '__main__':
         counted = t.bincount(minlength=65536)
         self.assertEqual(torch.sum(counted), 10)
 
+        # Cover the SAIL Zhenwu 810/Zhenwu 810E shared-memory boundary. The TSM CAS patch
+        # adds static TSM to this kernel, so these bin counts must launch and
+        # preserve every input element on both sides of the 32739-bin case.
+        for nbins in range(32737, 32742):
+            t = torch.randint(0, nbins, (5000,), device="cuda")
+            counts = torch.bincount(t, minlength=nbins)
+            self.assertEqual(counts.numel(), nbins)
+            self.assertEqual(counts.sum().item(), t.numel())
+
     def test_tiny_half_norm_(self):
         a = torch.arange(25).cuda().float()
         a /= 100000000
@@ -4143,7 +4152,10 @@ exit(2)
         torch.cuda.empty_cache()
 
         size = 1000
-        kSmallBuffer = 2097152
+        if torch.version.ppu:
+            kSmallBuffer = 8388608
+        else:
+            kSmallBuffer = 2097152
 
         def func_with_temps(t, val):
             x = t.clone() + val
@@ -4406,8 +4418,12 @@ exit(2)
     )
     def test_graph_memory_stats_and_use_result_after_destroy_graph(self):
         kSmallSize = 1048576
-        kSmallBuffer = 2097152
-        kLargeBuffer = 20971520
+        if torch.version.ppu:
+            kSmallBuffer = 8388608
+            kLargeBuffer = 33554432
+        else:
+            kSmallBuffer = 2097152
+            kLargeBuffer = 20971520
         kMinLargeAlloc = 10485760
         kRoundLarge = 2097152
 
@@ -6737,6 +6753,16 @@ class TestCudaAllocator(TestCase):
                 "expandable_segments:True,max_split_size_mb:40"
             )
             b = alloc(40)
+            if hasattr(torch.version, "ppu"):
+                # SAIL maps expandable large segments in 32 MB pages, so a 40 MB
+                # allocation reserves a 64 MB segment. Allow one more 40 MB
+                # allocation based on the actual reserved size.
+                total_allowed = torch.cuda.memory_reserved() + 40 * mb
+                fraction_allowed = total_allowed / all_memory
+                self.assertEqual(
+                    int(round(fraction_allowed * all_memory)), total_allowed
+                )
+                torch.cuda.memory.set_per_process_memory_fraction(fraction_allowed)
             torch.cuda.memory._set_allocator_settings(
                 "expandable_segments:False,max_split_size_mb:40"
             )
@@ -7343,8 +7369,12 @@ print(f"{torch.cuda.device_count()}")
 
 MIN_BLOCK_SIZE = 512
 SMALL_SIZE = 1048576
-SMALL_BUFFER = 2097152
-LARGE_BUFFER = 20971520
+if torch.version.ppu:
+    SMALL_BUFFER = 8388608
+    LARGE_BUFFER = 33554432
+else:
+    SMALL_BUFFER = 2097152
+    LARGE_BUFFER = 20971520
 
 
 def get_cudagraph_segments(pool_id):
@@ -8373,15 +8403,32 @@ class TestMemPool(TestCase):
             # (1 MB) that got packed into the existing 2 MB buffer
             self.assertEqual(len(pool.snapshot()), 1)
 
-            out_2 = torch.randn(nelem_1mb, device="cuda")
+            if hasattr(torch.version, "ppu"):
+                # SAIL uses an 8 MB minimum segment. Allocate enough additional
+                # 1 MB tensors to exceed the first segment's capacity.
+                segment_size = pool.snapshot()[0]["total_size"]
+                allocation_size = nelem_1mb * torch.empty(
+                    (), dtype=torch.float32
+                ).element_size()
+                additional_allocations = (
+                    (segment_size - 2 * allocation_size) // allocation_size + 1
+                )
+                pool_outputs = [
+                    torch.randn(nelem_1mb, device="cuda")
+                    for _ in range(additional_allocations)
+                ]
+            else:
+                out_2 = torch.randn(nelem_1mb, device="cuda")
+                pool_outputs = [out_2]
 
             # pool now should have 2 segments since the CUDACachingAllocator had
-            # to make a new 2 MB buffer to accommodate out_2
+            # to make a new buffer to accommodate the additional allocation(s)
             self.assertEqual(len(pool.snapshot()), 2)
 
         self.assertEqual(len(pool.snapshot()), 2)
 
-        del out_0, out_1, out_2
+        del out_0, out_1
+        del pool_outputs
 
         # pool's destructor calls emptyCache()
         del pool

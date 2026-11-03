@@ -1168,6 +1168,10 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
 
 
 @requires_cuda_p2p_access()
+@unittest.skipIf(
+    torch.version.sail is not None,
+    "PCCL does not provide NCCL symmetric-memory communicators",
+)
 class NCCLSymmetricMemoryNccl2Test(MultiProcContinuousTest):
     """NCCL symmetric memory over an nccl2-backed process group.
 

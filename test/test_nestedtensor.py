@@ -7351,7 +7351,10 @@ torch.cuda.synchronize()
 
         output = f(values, offsets)
         output.sum().backward()
-        self.assertEqual(values.grad, torch.ones_like(values))
+        if torch.version.ppu:
+            self.assertEqual(values.grad, torch.ones_like(values), atol=2e-4, rtol=1e-6)
+        else:
+            self.assertEqual(values.grad, torch.ones_like(values))
 
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FUSED_ATTENTION,

@@ -970,7 +970,11 @@ class Module:
             p_should_use_swap_tensors = (
                 should_use_swap_tensors
                 or is_traceable_wrapper_subclass(param_applied)
-                or isinstance(param, FakeTensor)  # noqa: ISINSTANCE_FAKE_TENSOR
+                or (
+                    isinstance(param, FakeTensor)  # noqa: ISINSTANCE_FAKE_TENSOR
+                    and not weakref.getweakrefs(param)
+                    and not weakref.getweakrefs(param_applied)
+                )
             )
 
             param_grad = param.grad
