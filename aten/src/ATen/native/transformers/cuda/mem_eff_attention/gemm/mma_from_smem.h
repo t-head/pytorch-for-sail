@@ -42,7 +42,11 @@
 #include <cutlass/epilogue/thread/linear_combination.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_simt.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_tensor_op.h>
+#if !defined(USE_PPU)
+// SAIL (SM80+) never instantiates the Volta epilogue, and the SAIL CUTLASS fork
+// does not provide the Volta warp sub-headers pulled in by this header.
 #include <cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h>
+#endif
 #include <cutlass/functional.h>
 #include <cutlass/gemm/gemm.h>
 #include <cutlass/gemm/warp/mma_tensor_op_fragment_iterator.h>
@@ -1626,6 +1630,7 @@ struct B2bGemm<
   }
 };
 
+#if !defined(USE_PPU)
 // Volta Specialization
 // only supported for f16
 template <typename Operator, typename WarpShape_, typename ThreadblockShape_>
@@ -1801,6 +1806,7 @@ struct B2bGemm<
     accumToSmem(shared_storage, accum, lane_id, tile_coords);
   }
 };
+#endif // !defined(USE_PPU): SAIL never selects the Volta B2bGemm specialization
 
 // Simt Specialization
 // for f32 on Sm70-Sm75 and f16/f32 below
