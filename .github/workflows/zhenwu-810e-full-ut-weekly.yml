@@ -146,7 +146,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-810e single card (1 Zhenwu PPU) CUDA full UT (shard 1/2)"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           nnodes: 0
           nproc_per_node: 1
@@ -278,7 +278,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-810e single card (1 Zhenwu PPU) CUDA full UT (shard 2/2)"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           nnodes: 0
           nproc_per_node: 1
