@@ -69,12 +69,16 @@ def _updated_hashes(hash_file, files_to_hash):
 @click.command()
 def regenerate_version():
     """Regenerate version.py."""
+    import os
     cmd = [
         sys.executable,
         "-m",
         "tools.generate_torch_version",
         "--is-debug=false",
     ]
+    sail_ver = os.environ.get("SAIL_VERSION", "")
+    if sail_ver:
+        cmd.append(f"--sail-version={sail_ver}")
     spin.util.run(cmd)
 
 
@@ -594,6 +598,33 @@ def install():
     `BUILD_CONFIG spin install`.
     """
     spin.util.run(_pip_install_cmd(editable=False))
+
+
+@click.command()
+@click.option(
+    "--output-dir",
+    default=None,
+    help="Write the converted tree to this directory (out-of-place).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Force re-conversion even if the tree is up to date.",
+)
+def sailify(output_dir, force):
+    """Convert CUDA sources to PPU sources with Sailify.
+
+    Requires USE_SAIL=1 in the environment. In-place by default; set
+    --output-dir for out-of-place conversion. The build must then be
+    run in the output tree.
+    """
+    from tools.sailify.convert import run_full_sailify
+
+    run_full_sailify(
+        CWD,
+        output_dir=output_dir,
+        force=force,
+    )
 
 
 PYREFLY_LINTER_SCRIPT = CWD / "tools" / "linter" / "adapters" / "pyrefly_linter.py"

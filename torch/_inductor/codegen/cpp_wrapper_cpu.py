@@ -36,6 +36,7 @@ from ..utils import (
 )
 from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
+from .aoti_sailify_utils import maybe_sailify_code_wrapper, _IS_PPU
 from .common import get_device_op_overrides, IndentedBuffer, Kernel
 from .cpp_utils import (
     cexpr,
@@ -55,6 +56,13 @@ from .wrapper import (
     SymbolicCallArg,
     WrapperLine,
 )
+
+
+def _maybe_device_code_wrapper(source_codes: str) -> str:
+    """Dispatch to sailify (PPU) or hipify (AMD) based on platform."""
+    if _IS_PPU:
+        return maybe_sailify_code_wrapper(source_codes)
+    return maybe_hipify_code_wrapper(source_codes)
 
 
 if TYPE_CHECKING:
@@ -1154,7 +1162,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
             if kernel in cpu_triton_names:
                 continue
             self.prefix.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     f"    {self.device_codegen.cpp_kernel_type()} {kernel}{{nullptr}};"
                 )
             )
