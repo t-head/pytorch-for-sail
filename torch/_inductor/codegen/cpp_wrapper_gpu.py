@@ -48,12 +48,20 @@ from ..utils import (
 )
 from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
+from .aoti_sailify_utils import maybe_sailify_code_wrapper, _IS_PPU
 from .common import get_device_op_overrides, TritonScratchWorkspace
 from .cpp_utils import cexpr
 from .cpp_wrapper_cpu import CppWrapperCpu
 from .multi_kernel import MultiKernelCall
 from .triton_utils import should_unwrap_unspec_arg
 from .wrapper import PythonWrapperCodegen, SymbolicCallArg
+
+
+def _maybe_device_code_wrapper(source_codes: str) -> str:
+    """Dispatch to sailify (PPU) or hipify (AMD) based on platform."""
+    if _IS_PPU:
+        return maybe_sailify_code_wrapper(source_codes)
+    return maybe_hipify_code_wrapper(source_codes)
 
 
 _cpp_string_literal_escapes = {
@@ -315,7 +323,7 @@ class DeferredTritonCallWrapper:
         ]
         shared_params.append("int32_t device_idx_")
         shared_params.append(
-            maybe_hipify_code_wrapper(
+            _maybe_device_code_wrapper(
                 f"{wrapper.device_codegen.cpp_stream_type()} stream_"
             )
         )
@@ -369,7 +377,7 @@ class DeferredTritonCallWrapper:
 
         if not V.graph.aot_mode:
             prefix.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     f"static {wrapper.device_codegen.cpp_kernel_type()} {self.kernel_name} = nullptr;"
                 )
             )
@@ -553,7 +561,7 @@ class DeferredTritonCallWrapper:
             size_expr = f"{kernel_name}_result.{scratch_name}"
             var = f"{scratch_name}_ptr"
             prefix.splice(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     f"""\
                 int64_t {var}_numel = {size_expr} * {grid_extent};
                 RAIIAtenTensorHandle {var}_tensor;
@@ -684,7 +692,7 @@ class DeferredTritonCallWrapper:
         if tma_signature_types:
             wrapper.write_tma_descriptor_helpers_once()
 
-        kernel_type = maybe_hipify_code_wrapper(
+        kernel_type = _maybe_device_code_wrapper(
             wrapper.device_codegen.cpp_kernel_type()
         )
 
@@ -1111,7 +1119,7 @@ class CppWrapperGpu(CppWrapperCpu):
             # (which hipifies to hipDeviceSynchronize and IS linked in the ROCm build).
             if torch.version.hip is not None:
                 buffer.writeline(
-                    maybe_hipify_code_wrapper(
+                    _maybe_device_code_wrapper(
                         "AOTI_RUNTIME_CUDA_CHECK(cudaDeviceSynchronize());"
                     )
                 )
@@ -1140,7 +1148,7 @@ class CppWrapperGpu(CppWrapperCpu):
             return
 
         super().write_header()
-        kernel_driver = maybe_hipify_code_wrapper(self.device_codegen.kernel_driver())
+        kernel_driver = _maybe_device_code_wrapper(self.device_codegen.kernel_driver())
         if V.graph.is_const_graph and V.graph.is_dual_wrapper_mode:
             # For a dual-wrapper-mode const graph, only the standalone JIT
             # output needs this header content. The AOTI const body is spliced
@@ -1185,7 +1193,7 @@ class CppWrapperGpu(CppWrapperCpu):
             return name
 
         self.writeline(
-            maybe_hipify_code_wrapper(
+            _maybe_device_code_wrapper(
                 f"{self.device_codegen.cpp_stream_type()} {name};"
             )
         )
@@ -1207,7 +1215,7 @@ class CppWrapperGpu(CppWrapperCpu):
         with open(
             os.path.join(os.path.dirname(__file__), "aoti_runtime", "streams.h")
         ) as f:
-            self.header.splice(maybe_hipify_code_wrapper(f.read()))
+            self.header.splice(_maybe_device_code_wrapper(f.read()))
         self.header.splice(
             """
             namespace {
@@ -1249,7 +1257,7 @@ class CppWrapperGpu(CppWrapperCpu):
             if i in self._declared_aux_stream_slots:
                 continue
             code.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     f"{stream_type} {get_stream_name(i)} = "
                     f"_aoti_aux_stream_cache.get({i}, this->device_idx_, stream);"
                 )
@@ -1297,7 +1305,7 @@ class CppWrapperGpu(CppWrapperCpu):
         if op == "record_event":
             stream_idx = _parse_idx(args[1])
             self.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     "AOTI_RUNTIME_CUDA_CHECK(cudaEventRecord("
                     f"_aoti_event_cache.get({event_idx}, this->device_idx_), "
                     f"{self._stream_expr_for_idx(stream_idx)}));"
@@ -1307,7 +1315,7 @@ class CppWrapperGpu(CppWrapperCpu):
         if op == "wait_event":
             stream_idx = _parse_idx(args[1])
             self.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     "AOTI_RUNTIME_CUDA_CHECK(cudaStreamWaitEvent("
                     f"{self._stream_expr_for_idx(stream_idx)}, "
                     f"_aoti_event_cache.get({event_idx}, this->device_idx_), 0));"
@@ -1316,7 +1324,7 @@ class CppWrapperGpu(CppWrapperCpu):
             return True
         if op == "synchronize_event":
             self.writeline(
-                maybe_hipify_code_wrapper(
+                _maybe_device_code_wrapper(
                     "AOTI_RUNTIME_CUDA_CHECK(cudaEventSynchronize("
                     f"_aoti_event_cache.get({event_idx}, this->device_idx_)));"
                 )
@@ -1433,7 +1441,7 @@ class CppWrapperGpu(CppWrapperCpu):
         # scopes, so a per-call declaration would be scoped to the guard
         # and unavailable to other kernel calls in the same function.
         if V.graph.is_dual_wrapper_mode:
-            stream_type = maybe_hipify_code_wrapper(
+            stream_type = _maybe_device_code_wrapper(
                 self.device_codegen.cpp_stream_type()
             )
             get_stream = self.device_codegen.aoti_get_stream()
@@ -1633,7 +1641,7 @@ static inline void ensure_triton_kernel_compiles_started() {{
             ):
                 device_ptr_type = self.device_codegen.cpp_device_ptr()
                 code.writeline(
-                    maybe_hipify_code_wrapper(
+                    _maybe_device_code_wrapper(
                         f"{device_ptr_type} {var_name} = reinterpret_cast<{device_ptr_type}>({arg}.data_ptr());"
                     )
                 )
@@ -1691,7 +1699,7 @@ static inline void ensure_triton_kernel_compiles_started() {{
                 is not None
             ):
                 scratch_def, scratch_var = scratch
-                code.writelines([maybe_hipify_code_wrapper(x) for x in scratch_def])
+                code.writelines([_maybe_device_code_wrapper(x) for x in scratch_def])
                 new_args.append(f"&{scratch_var}")
 
         return ", ".join(new_args)

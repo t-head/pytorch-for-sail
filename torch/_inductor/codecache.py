@@ -259,6 +259,22 @@ def _cuda_fatbin_command(
 ) -> list[str]:
     if not current_arch:
         current_arch = cuda_compile_utils._nvcc_arch_as_compile_option_or_raise()
+
+    is_sail = torch.version.sail is not None
+    if is_sail:
+        # SAIL: use hgcc --fatbin with native SAIL arch
+        if nvcc is None:
+            raise RuntimeError("CUDA/PPU compiler is required to build fatbin")
+        return [
+            *shlex.split(nvcc),
+            "--fatbin",
+            asm_file,
+            "-o",
+            cubin_file,
+            "--gpu-architecture="
+            + cuda_compile_utils._ppu_arch_from_cuda_arch(current_arch),
+        ]
+
     gencode_options = cuda_compile_utils._cuda_multi_arch_gencode_options(current_arch)
     if (
         fatbinary is not None
@@ -3391,8 +3407,13 @@ end
                     from concurrent.futures import ThreadPoolExecutor
 
                     nvcc = cuda_compile_utils._cuda_compiler()
-                    fatbinary = shutil.which("fatbinary")
-                    if nvcc is not None and (nvcc_dir := os.path.dirname(nvcc)):
+                    is_sail = torch.version.sail is not None
+                    fatbinary = None if is_sail else shutil.which("fatbinary")
+                    if (
+                        not is_sail
+                        and nvcc is not None
+                        and (nvcc_dir := os.path.dirname(nvcc))
+                    ):
                         candidate = os.path.join(nvcc_dir, "fatbinary")
                         if os.path.exists(candidate):
                             fatbinary = candidate

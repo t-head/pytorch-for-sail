@@ -2,6 +2,7 @@
 import functools
 import logging
 import os
+import shutil
 import sys
 import tempfile
 import typing_extensions
@@ -243,6 +244,12 @@ def max_clock_rate():
     """
     unit: MHz
     """
+    # SAIL (PPU) mode: query ppu-smi via the shared helper. See torch/_smi.py.
+    from torch._smi import get_ppu_max_sm_clock_mhz, is_sail_mode
+
+    if is_sail_mode():
+        return get_ppu_max_sm_clock_mhz()
+
     if not torch.version.hip:
         from triton.testing import nvsmi
 
