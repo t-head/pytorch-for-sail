@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <type_traits>
 
+#ifdef USE_PPU
+#include <cuda.h>
+#include <cuda_runtime.h>
+#endif
+
 #include <ATen/core/Tensor.h>
 #include <ATen/TensorOperators.h>
 
@@ -51,6 +56,9 @@
 #include <ATen/native/transformers/cuda/mem_eff_attention/kernels/cutlassB.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/gemm_kernel_utils.h>
 #include <ATen/native/transformers/cuda/mem_eff_attention/pytorch_utils.h>
+#ifdef USE_PPU
+#include <xformers/csrc/attention/cuda/fmha/mem_eff_api.h>
+#endif // USE_PPU
 #else
 #include <ATen/native/transformers/hip/gemm_kernel_utils.h>
 // MemoryEfficient Attention Specific Imports for ROCM
@@ -98,6 +106,18 @@ Tensor ensure_mem_eff_attention_bias_alignment(const Tensor& bias) {
 }
 
 } // namespace
+
+#ifdef USE_PPU
+std::string getDeviceArchitecture() {
+  int deviceID = 0;
+  cudaError_t err = cudaGetDevice(&deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting current device ID: ", cudaGetErrorString(err));
+  cudaDeviceProp prop;
+  err = cudaGetDeviceProperties(&prop, deviceID);
+  TORCH_CHECK(err == cudaSuccess, "Error getting device properties: ", cudaGetErrorString(err));
+  return std::to_string(prop.major) + "." + std::to_string(prop.minor);
+}
+#endif
 
 std::tuple<Tensor, Tensor, Tensor> _flash_attention_backward(
     const Tensor& grad_out,
@@ -392,10 +412,121 @@ _efficient_attention_backward(
     std::optional <int64_t> num_splits_key,
     const std::optional<int64_t> window_size,
     const bool shared_storage_dqdkdv) {
-  #if defined(USE_MEM_EFF_ATTENTION)
+#if defined(USE_MEM_EFF_ATTENTION)
   if (!grad_out_.defined()) {
     return std::make_tuple(Tensor{}, Tensor{}, Tensor{}, Tensor{});
   }
+#ifdef USE_PPU
+  // Get device arch
+  std::string arch = getDeviceArchitecture();
+  TORCH_CHECK(arch != "Error", "getDeviceArchitecture failed!");
+  // 1. Abstract for PPU1.0 and PPU1.5 path
+  // 2. PPU1.0 arch: SM80; PPU1.5 arch: SM89
+  if (arch == "8.0") {
+    // 1. see https://github.com/pytorch/pytorch/commit/9bd6d6e8b02ec1c6285b6ee785e38ec86ce2f1bd
+    // pytorch 2.4 update xformers impl here, add window size param for sliding window and shared_storage_dqdkdv param for saving torch.cat usage
+    // in SAIL not support this feature for now since the xformers embedded here does not update if not necessary
+    // Warning will be raised if windows_size/shared_storage_dqdkdv has value for better debug in the future.
+    // 2. since window_size is optional params in SAIL impl, we don't pass this here.
+    char *pEnv_perf = std::getenv("PPU_SDPA_BACKEND_MEM_EFFI_CE");
+    if (!pEnv_perf) {
+      // Num heads: allow GQA (query heads must be a multiple of KV heads)
+      TORCH_CHECK(query.dim() == 4 && key.dim() == 4 && value.dim() == 4);
+      const int64_t nH = query.size(2);
+      const int64_t nHkv = key.size(2);
+      TORCH_CHECK(nHkv == value.size(2));
+      TORCH_CHECK(
+          (nH == 0 && nHkv == 0) ||
+              (nH > 0 && nHkv > 0 && nH % nHkv == 0),
+          "Number of heads in key/value must divide number of heads in query");
+
+      const int64_t B = query.size(0);
+      const int64_t N = key.size(1);
+      const int64_t K = query.size(3);
+      const int64_t Kv = value.size(3);
+
+      // Handle empty tensors (e.g. zero heads) without launching any kernel.
+      if (nH == 0 || query.size(1) == 0 || N == 0 || B == 0) {
+        at::Tensor grad_q = at::zeros(query.sizes(), query.options());
+        at::Tensor grad_k = at::zeros(key.sizes(), key.options());
+        at::Tensor grad_v = at::zeros(value.sizes(), value.options());
+        at::Tensor grad_bias;
+        if (bias_requires_grad) {
+          TORCH_CHECK(
+              kernel_bias.has_value(),
+              "bias_requires_grad is true but no bias was provided");
+          grad_bias = at::zeros(kernel_bias->sizes(), kernel_bias->options());
+        }
+        return std::make_tuple(
+            std::move(grad_q), std::move(grad_k), std::move(grad_v),
+            std::move(grad_bias));
+      }
+
+      // The embedded xformers (v0.0.27) does not support GQA natively:
+      // expand key/value on the host (matching the forward pass) and reduce
+      // the key/value gradients afterwards.
+      at::Tensor key_t = key;
+      at::Tensor value_t = value;
+      const bool is_gqa = nH != nHkv;
+      if (is_gqa) {
+        const int64_t q_heads_per_kv = nH / nHkv;
+        key_t = key.repeat_interleave(q_heads_per_kv, /*dim=*/2);
+        value_t = value.repeat_interleave(q_heads_per_kv, /*dim=*/2);
+      }
+
+      // The embedded xformers (v0.0.27) cutlassF fa1 kernel produces wrong
+      // results when key/value share one buffer across heads (stride(2) == 0)
+      // combined with a single-query tail block and causal/bias masking (see
+      // the forward pass). Materialize key/value on the host to work around
+      // it.
+      if (nH > 1) {
+        if (key_t.stride(2) == 0) {
+          key_t = key_t.contiguous();
+        }
+        if (value_t.stride(2) == 0) {
+          value_t = value_t.contiguous();
+        }
+      }
+
+      if (window_size.has_value()) {
+        TORCH_WARN_ONCE("Warning! window_size was used here!");
+      }
+      if (shared_storage_dqdkdv == true) {
+        TORCH_WARN_ONCE("Warning! shared_storage_dqdkdv was used here!");
+      }
+      // Abstract for PPU1.0 path
+      // return [grad_q, grad_k, grad_v, grad_bias]
+      std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> result =
+          mem_efficient_attention_backward_cutlass(
+              grad_out_, query, key_t, value_t, kernel_bias, out,
+              cu_seqlens_q_dummy, cu_seqlens_k_dummy, max_seqlen_q,
+              max_seqlen_k, logsumexp, dropout_p,
+              philox_seed, philox_offset, custom_mask_type,
+              bias_requires_grad, scale, num_splits_key.value_or(0), window_size);
+
+      if (is_gqa) {
+        // Reduce the expanded key/value gradients back to the KV heads.
+        at::Tensor grad_k_final = at::empty(key.sizes(), key.options());
+        at::Tensor grad_v_final = at::empty(value.sizes(), value.options());
+        at::sum_out(
+            grad_k_final,
+            at::reshape(std::get<1>(result), {B, N, nHkv, nH / nHkv, K}),
+            {3});
+        at::sum_out(
+            grad_v_final,
+            at::reshape(std::get<2>(result), {B, N, nHkv, nH / nHkv, Kv}),
+            {3});
+        return std::make_tuple(
+            std::get<0>(result), std::move(grad_k_final),
+            std::move(grad_v_final), std::get<3>(result));
+      }
+      return result;
+    }
+  } else if (arch != "8.9") {
+    // Not support Arch
+    TORCH_CHECK(false, "Unsupported architecture: ", arch, ". Only SM80 (8.0) and SM89 (8.9) are supported.");
+  }
+#endif
   // This path is used when we directly call _efficient_attention_forward
   // from python.
   // This is needed because SaveVariable automatically converts
@@ -981,7 +1112,7 @@ _efficient_attention_backward(
   }
 #endif // USE_ROCM
   return std::make_tuple(std::move(grad_q), std::move(grad_k), std::move(grad_v), std::move(grad_bias));
-  #endif // defined(USE_MEM_EFF_ATTENTION)
+#endif // defined(USE_MEM_EFF_ATTENTION)
   TORCH_CHECK(false, "USE_MEM_EFF_ATTENTION was not enabled for build.")
   return std::make_tuple(Tensor{}, Tensor{}, Tensor{}, Tensor{});
 }

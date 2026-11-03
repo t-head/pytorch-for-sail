@@ -35,9 +35,14 @@
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
+// SAIL: sm70/sm75/sm80 default_mma_core all map to ppu0010 (below-sm80 variants are not instantiated separately)
+#if defined(USE_PPU)
+#include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
+#else
 #include <cutlass/gemm/threadblock/default_mma_core_sm70.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm75.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm80.h>
+#endif
 #include <cutlass/integer_subbyte.h>
 #include <cutlass/matrix_shape.h>
 #include <cutlass/platform/platform.h>
@@ -2404,7 +2409,7 @@ struct AttentionBackwardKernel {
         thread_id,
         cutlass::MatrixCoord{0, 0});
 
-    MatmulQK::Mma::template prologue<kReloadK, true>(
+    MatmulQK::Mma::prologue<kReloadK, true>(
         shared_storage.mm_qk_k(),
         shared_storage.mm_qk_q(),
         iterator_A,

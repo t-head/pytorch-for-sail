@@ -25,15 +25,24 @@
 
 #include <cutlass/epilogue/threadblock/default_epilogue_simt.h>
 #include <cutlass/epilogue/threadblock/default_epilogue_tensor_op.h>
+#if !defined(USE_PPU)
+// SAIL (SM80+) never instantiates the Volta epilogue, and the SAIL CUTLASS fork
+// does not provide the Volta warp sub-headers pulled in by this header.
 #include <cutlass/epilogue/threadblock/default_epilogue_volta_tensor_op.h>
+#endif
 
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 #include <cutlass/gemm/kernel/default_gemm.h>
 #include <cutlass/gemm/threadblock/default_mma.h>
 #include <cutlass/gemm/threadblock/default_mma_core_simt.h>
+// SAIL: sm70/sm75/sm80 default_mma_core all map to ppu0010 (below-sm80 variants are not instantiated separately)
+#if defined(USE_PPU)
+#include <cutlass/gemm/threadblock/default_mma_core_ppu0010.h>
+#else
 #include <cutlass/gemm/threadblock/default_mma_core_sm70.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm75.h>
 #include <cutlass/gemm/threadblock/default_mma_core_sm80.h>
+#endif
 #include <cutlass/gemm/threadblock/threadblock_swizzle.h>
 #include <cutlass/matrix_shape.h>
 #include <cutlass/platform/platform.h>
@@ -726,7 +735,7 @@ struct AttentionKernel {
 
       auto prologueV = [&](int blockN) {
         typename MM1::Mma::IteratorB iterator_V(
-            typename MM1::IteratorB::Params{typename MM1::LayoutB(p.v_strideM)},
+            typename MM1::IteratorB::Params{MM1::LayoutB(p.v_strideM)},
             const_cast<scalar_t*>(p.value_ptr + iter_key_start * p.v_strideM),
             {problem_size_1_k, problem_size_1_n},
             thread_id(),
@@ -1022,7 +1031,7 @@ struct AttentionKernel {
         }
 
         typename MM1::Mma::IteratorB iterator_V(
-            typename MM1::IteratorB::Params{typename MM1::LayoutB(p.v_strideM)},
+            typename MM1::IteratorB::Params{MM1::LayoutB(p.v_strideM)},
             const_cast<scalar_t*>(p.value_ptr + iter_key_start * p.v_strideM),
             {problem_size_1_k, problem_size_1_n},
             thread_id(),
