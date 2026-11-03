@@ -1,3 +1,13 @@
+From PyTorch-for-SAIL:
+
+Copyright (c) 2022-2026, T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
+
+This product includes software developed by the PyTorch project
+(https://github.com/pytorch/pytorch), licensed under the BSD 3-Clause License.
+
+Modifications for the SAIL platform adaptation are Copyright (c) 2022-2026
+T-HEAD (SHANGHAI) SEMICONDUCTOR CO., LTD.
+
 From PyTorch:
 
 Copyright (c) 2016-     Facebook, Inc            (Adam Paszke)
