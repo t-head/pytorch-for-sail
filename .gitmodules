@@ -22,6 +22,11 @@
     ignore = dirty
     path = third_party/gloo
     url = https://github.com/pytorch/gloo
+[submodule "third_party/gloo-for-sail"]
+    ignore = dirty
+    path = third_party/gloo-for-sail
+    url = https://github.com/t-head/gloo-for-sail.git
+    branch = main
 [submodule "third_party/NNPACK_deps/pthreadpool"]
     ignore = dirty
     path = third_party/pthreadpool
@@ -126,9 +131,34 @@
 [submodule "third_party/flash-attention"]
 	path = third_party/flash-attention
 	url = https://github.com/Dao-AILab/flash-attention.git
+[submodule "third_party/actlize"]
+    ignore = dirty
+    path = third_party/actlize
+    url = https://github.com/t-head/actlize.git
+    branch = v0.8.0
+[submodule "third_party/flash-attention-for-sail"]
+    ignore = dirty
+    path = third_party/flash-attention-for-sail
+    url = https://github.com/t-head/flash-attention-for-sail.git
+    branch = v2.7.2
 [submodule "third_party/aiter"]
 	path = third_party/aiter
 	url = https://github.com/ROCm/aiter.git
 [submodule "third_party/mslk"]
 	path = third_party/mslk
 	url = https://github.com/meta-pytorch/MSLK.git
+[submodule "third_party/xformers-for-sail"]
+    ignore = dirty
+    path = third_party/xformers-for-sail
+    url = https://github.com/t-head/xformers-for-sail.git
+    branch = v0.0.27
+[submodule "third_party/sailify"]
+    ignore = dirty
+    path = third_party/sailify
+    url = https://github.com/t-head/sailify.git
+    branch = Main
+[submodule "third_party/cmake-hgcc"]
+    ignore = dirty
+    path = third_party/cmake-hgcc
+    url = https://github.com/t-head/cmake-hgcc.git
+    branch = master
