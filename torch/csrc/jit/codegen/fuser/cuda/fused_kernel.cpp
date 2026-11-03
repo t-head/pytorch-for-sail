@@ -124,6 +124,16 @@ FusedKernelCUDA::FusedKernelCUDA(
 #if defined(USE_ROCM)
   std::vector<const char*> args = {"--std=c++20"};
   args.push_back("-hip-pch");
+#elif defined(USE_SAIL)
+  // SAIL: hgrtc expects --gpu-architecture=ppu_XX, not sm_/compute_
+  // Map CUDA compute capability to SAIL arch:
+  // major=8, minor=0/6 → ppu_10; major=8, minor=9 → ppu_15
+  const std::string ppu_arch_str =
+      (major == 8 && minor == 9) ? "ppu_15" : "ppu_10";
+  const std::string compute =
+      std::string("--gpu-architecture=") + ppu_arch_str;
+  const std::vector<const char*> args = {
+      "--std=c++17", compute.c_str(), "-default-device"};
 #else
   const std::string compute = std::string("--gpu-architecture=") +
 #if !defined(USE_ROCM)
