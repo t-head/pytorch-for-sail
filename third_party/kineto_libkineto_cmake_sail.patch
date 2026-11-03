@@ -1,0 +1,17 @@
+diff --git a/libkineto/CMakeLists.txt b/libkineto/CMakeLists.txt
+--- a/libkineto/CMakeLists.txt
++++ b/libkineto/CMakeLists.txt
+@@ -84,9 +84,12 @@
+ 
+ # Per-backend configure-time setup.
+ if(KINETO_BACKEND STREQUAL "cuda")
+   # CUDA / CUPTI detection
+-  find_package(CUDAToolkit REQUIRED)
++  # PPU SAIL: skip CUDAToolkit probe when CUDA::cupti/cudart are pre-created.
++  if(NOT TARGET CUDA::cupti OR NOT TARGET CUDA::cudart)
++    find_package(CUDAToolkit REQUIRED)
++  endif()
+   if(NOT TARGET CUDA::cupti)
+     message(FATAL_ERROR
+       "KINETO_BACKEND=cuda but CUPTI was not found. "
+       "Install the CUDA Toolkit with CUPTI, set CUDAToolkit_ROOT, "

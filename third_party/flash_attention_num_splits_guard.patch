@@ -1,0 +1,16 @@
+diff --git a/csrc/flash_attn/flash_api.cpp b/csrc/flash_attn/flash_api.cpp
+--- a/csrc/flash_attn/flash_api.cpp
++++ b/csrc/flash_attn/flash_api.cpp
+@@ -595,7 +595,11 @@ mha_varlen_fwd(const at::Tensor &q_,  // total_q x num_heads x head_size, total_
+                int window_size_right,
+                const float softcap,
+                const bool return_softmax,
+-               std::optional<at::Generator> gen_) {
++               std::optional<at::Generator> gen_,
++               int num_splits) {
++    TORCH_CHECK(num_splits == 0,
++        "num_splits is not supported on PPU platform. "
++        "Please use num_splits=0 (default) for PPU builds.");
+ #else
+ std::vector<at::Tensor>
+ mha_varlen_fwd(at::Tensor &q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
