@@ -3,7 +3,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from tabulate import tabulate
+try:
+    from tabulate import tabulate as _tabulate
+except ModuleNotFoundError:
+    def _tabulate(data: object, **_: object) -> str:
+        return str(data)
 
 from torch.distributed.debug._frontend import (
     DebugHandler,
@@ -317,14 +321,14 @@ class FlightRecorderHandler(DebugHandler):
             "fr_trace.html",
             title="FlightRecorder",
             fetch_summary=format_fetch_summary(addrs, resps),
-            groups=tabulate(db.groups, headers=Group._fields, tablefmt="html"),
-            memberships=tabulate(
+            groups=_tabulate(db.groups, headers=Group._fields, tablefmt="html"),
+            memberships=_tabulate(
                 db.memberships, headers=Membership._fields, tablefmt="html"
             ),
-            collectives=tabulate(
+            collectives=_tabulate(
                 db.collectives, headers=Collective._fields, tablefmt="html"
             ),
-            ncclcalls=tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="html"),
+            ncclcalls=_tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="html"),
         )
 
     def _handle_fr_trace(self, req: HTTPRequestHandler) -> bytes:
@@ -370,13 +374,13 @@ class FlightRecorderHandler(DebugHandler):
             [
                 "=== FR Trace ===",
                 "--- Groups ---",
-                tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
+                _tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
                 "--- Memberships ---",
-                tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
+                _tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
                 "--- Collectives ---",
-                tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
+                _tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
                 "--- NCCL Calls ---",
-                tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
+                _tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
             ]
         )
 
@@ -390,21 +394,21 @@ class FlightRecorderHandler(DebugHandler):
                     "",
                     "=== FR Trace NCCL ===",
                     "--- Groups ---",
-                    tabulate(nccl_db.groups, headers=Group._fields, tablefmt="plain"),
+                    _tabulate(nccl_db.groups, headers=Group._fields, tablefmt="plain"),
                     "--- Memberships ---",
-                    tabulate(
+                    _tabulate(
                         nccl_db.memberships,
                         headers=Membership._fields,
                         tablefmt="plain",
                     ),
                     "--- Collectives ---",
-                    tabulate(
+                    _tabulate(
                         nccl_db.collectives,
                         headers=Collective._fields,
                         tablefmt="plain",
                     ),
                     "--- NCCL Calls ---",
-                    tabulate(
+                    _tabulate(
                         nccl_db.ncclcalls,
                         headers=NCCLCall._fields,
                         tablefmt="plain",
@@ -542,14 +546,14 @@ class TorchCommsFlightRecorderHandler(DebugHandler):
             "fr_trace.html",
             title="TorchComms FlightRecorder",
             fetch_summary=format_fetch_summary(addrs, resps),
-            groups=tabulate(db.groups, headers=Group._fields, tablefmt="html"),
-            memberships=tabulate(
+            groups=_tabulate(db.groups, headers=Group._fields, tablefmt="html"),
+            memberships=_tabulate(
                 db.memberships, headers=Membership._fields, tablefmt="html"
             ),
-            collectives=tabulate(
+            collectives=_tabulate(
                 db.collectives, headers=Collective._fields, tablefmt="html"
             ),
-            ncclcalls=tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="html"),
+            ncclcalls=_tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="html"),
         )
 
     def dump(self) -> str | None:
@@ -564,13 +568,13 @@ class TorchCommsFlightRecorderHandler(DebugHandler):
             [
                 "=== TorchComms FR Trace ===",
                 "--- Groups ---",
-                tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
+                _tabulate(db.groups, headers=Group._fields, tablefmt="plain"),
                 "--- Memberships ---",
-                tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
+                _tabulate(db.memberships, headers=Membership._fields, tablefmt="plain"),
                 "--- Collectives ---",
-                tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
+                _tabulate(db.collectives, headers=Collective._fields, tablefmt="plain"),
                 "--- NCCL Calls ---",
-                tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
+                _tabulate(db.ncclcalls, headers=NCCLCall._fields, tablefmt="plain"),
             ]
         )
         return "\n".join(parts)
