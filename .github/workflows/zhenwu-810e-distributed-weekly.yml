@@ -144,7 +144,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-810e multi-card (2 Zhenwu PPU) CUDA distributed tests"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
 
           nnodes: 0
