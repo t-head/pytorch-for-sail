@@ -145,7 +145,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-full-ut 1/2"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           nnodes: 0
           nproc_per_node: 1
@@ -277,7 +277,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-m890 full UT (shard 2/2)"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           nnodes: 0
           nproc_per_node: 1
