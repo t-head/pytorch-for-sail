@@ -164,6 +164,37 @@ _SAILIFY_FINGERPRINT_EXTS = _SAILIFY_EXTS + (
 _SAILIFY_SKIP_DIRS = {".git", "build", "dist", "__pycache__", ".ppu_compat"}
 
 
+def apply_gloo_sailify_cmake_patch(source_root: Path) -> None:
+    """Apply the torch-level Sailify.cmake patch to gloo-for-sail.
+
+    The patch is maintained in the PyTorch tree (not inside the
+    gloo-for-sail submodule) so the submodule remains unmodified.
+    It makes the gloo conversion use CMake-managed PYTHONPATH to
+    invoke sailify_cli directly, avoiding the .sailify-bin wrapper.
+    """
+    use_sail = str2bool(os.getenv("USE_SAIL"))
+    if not use_sail:
+        return
+
+    target = source_root / "third_party" / "gloo-for-sail" / "cmake" / "Sailify.cmake"
+    if not target.is_file():
+        return
+
+    # Idempotency: the patched file defines SAILIFY_RUN_COMMAND.
+    content = target.read_text(encoding="utf-8", errors="replace")
+    if "SAILIFY_RUN_COMMAND" in content:
+        print("gloo-for-sail Sailify.cmake patch already applied, skipping.")
+        return
+
+    patch_file = source_root / "tools" / "sailify" / "patches" / "gloo-for-sail-cmake-sailify.patch"
+    if not patch_file.is_file():
+        raise FileNotFoundError(
+            f"gloo Sailify.cmake patch not found at {patch_file}. "
+            "Run qoder_scripts/setup_torch_level_patch.sh to generate it."
+        )
+    apply_patch(str(patch_file), str(source_root))
+
+
 def _sailify_fingerprint(source_root: Path) -> str:
     """Return a stable metadata fingerprint for all convertible sources."""
     digest = hashlib.sha256()
@@ -366,45 +397,6 @@ def vendor_sailify_package(target_root: Path) -> None:
     print(f"Vendored sailify package: {sailify_src} -> {torch_sailify}")
 
 
-def ensure_sailify_command(source_root: Path) -> None:
-    """Create the project-local ``sailify`` command used by Gloo's CMake.
-
-    The wrapper lives in the converted tree so a later build process (including
-    a container) does not depend on the conversion process's temporary PATH.
-    """
-    sailify_src = source_root / "third_party" / "sailify"
-    if not (sailify_src / "sailify_cli.py").is_file():
-        raise FileNotFoundError(
-            f"sailify CLI source not found at {sailify_src / 'sailify_cli.py'}"
-        )
-
-    body = (
-        "#!/bin/sh\n"
-        f'PYTHONPATH="{sailify_src}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
-        "export PYTHONPATH\n"
-        'exec "${PYTHON:-python3}" -m sailify_cli "$@"\n'
-    )
-    bin_dir = source_root / ".sailify-bin"
-    wrapper = bin_dir / "sailify"
-    try:
-        bin_dir.mkdir(parents=True, exist_ok=True)
-        wrapper.write_text(body, encoding="utf-8")
-        wrapper.chmod(0o755)
-        subprocess.check_output(
-            [str(wrapper), "--help"],
-            env=dict(os.environ, PYTHON=sys.executable),
-            stderr=subprocess.STDOUT,
-        )
-    except (OSError, subprocess.CalledProcessError) as e:
-        raise RuntimeError(
-            "Could not create the project-local `sailify` wrapper required "
-            f"by Gloo's CMake at {wrapper}: {e}"
-        ) from e
-
-    os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
-    print(f"-- generated project-local sailify wrapper at {wrapper}")
-
-
 # ---------------------------------------------------------------------------
 # SAIL build-environment initialization (pre-build step)
 # ---------------------------------------------------------------------------
@@ -537,6 +529,9 @@ def apply_all_patches(source_root: Path) -> None:
         )
         apply_kineto_sail_patch(kineto_patch_file, kineto_root)
 
+    # Gloo sailify CMake patch (torch-level, only touches submodule at build time)
+    apply_gloo_sailify_cmake_patch(source_root)
+
 
 # ---------------------------------------------------------------------------
 # Main orchestrator
@@ -575,7 +570,6 @@ def run_full_sailify(
     target = source_root if in_place else Path(os.path.abspath(output_dir))  # type: ignore[arg-type]
 
     # Step 3: persist the command where CMake can find it in a later process.
-    ensure_sailify_command(target)
 
     # Step 4: patches (applied to the target tree)
     apply_all_patches(target)
