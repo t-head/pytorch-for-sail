@@ -1355,7 +1355,6 @@ if(USE_GLOO)
       if(USE_SAIL)
         set(USE_CUDA_SAVED ${USE_CUDA})
         set(USE_CUDA OFF)
-        list(PREPEND CMAKE_PROGRAM_PATH "${PROJECT_SOURCE_DIR}/.sailify-bin")
         message(STATUS "PPU SAIL: building gloo with PPU/HGGC device support (gloo_hg)")
       else()
         set(USE_PPU_SAVED ${USE_PPU})
@@ -1378,6 +1377,28 @@ if(USE_GLOO)
         set(GLOO_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../third_party/gloo")
         set(GLOO_BINARY_SUBDIR "third_party/gloo")
       endif()
+
+      # SAIL: apply the torch-level patch to gloo-for-sail/cmake/Sailify.cmake.
+      # The patch is maintained in tools/sailify/patches/ so the submodule file
+      # is not modified in the repository; it is only patched at build time.
+      if(USE_SAIL AND EXISTS "${PROJECT_SOURCE_DIR}/tools/sailify/patches/gloo-for-sail-cmake-sailify.patch")
+        set(GLOO_SAILIFY_PATCH "${PROJECT_SOURCE_DIR}/tools/sailify/patches/gloo-for-sail-cmake-sailify.patch")
+        file(READ "${GLOO_SOURCE_DIR}/cmake/Sailify.cmake" GLOO_SAILIFY_CMAKE_CONTENT)
+        if(NOT GLOO_SAILIFY_CMAKE_CONTENT MATCHES "SAILIFY_RUN_COMMAND")
+          execute_process(
+            COMMAND patch -p1 -i "${GLOO_SAILIFY_PATCH}"
+            WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+            RESULT_VARIABLE GLOO_SAILIFY_PATCH_RESULT
+          )
+          if(NOT GLOO_SAILIFY_PATCH_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to apply gloo-for-sail Sailify.cmake patch: ${GLOO_SAILIFY_PATCH}")
+          endif()
+          message(STATUS "Applied gloo-for-sail Sailify.cmake patch")
+        else()
+          message(STATUS "gloo-for-sail Sailify.cmake patch already applied")
+        endif()
+      endif()
+
       add_subdirectory(${GLOO_SOURCE_DIR})
       set(USE_NCCL ${USE_NCCL_SAVED})
       set(USE_RCCL ${USE_RCCL_SAVED})

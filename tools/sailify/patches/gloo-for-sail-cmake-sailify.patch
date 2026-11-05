@@ -1,0 +1,54 @@
+--- a/third_party/gloo-for-sail/cmake/Sailify.cmake
++++ b/third_party/gloo-for-sail/cmake/Sailify.cmake
+@@ -15,23 +15,43 @@
+ # cause infinite recursion.  We therefore stage the conversion in /tmp
+ # and then move it into the build tree.
+ 
+-find_program(SAILIFY_COMMAND sailify)
+-if(NOT SAILIFY_COMMAND)
+-  message(FATAL_ERROR
+-    "sailify not found in PATH. Ensure the PPU SDK environment is "
+-    "sourced (e.g. source PPU_SDK/envsetup.sh ppu) before running cmake.")
+-endif()
+-
+ set(SAILIFY_OUTPUT_ROOT_DIR ${PROJECT_BINARY_DIR}/sailify)
+ 
+ # Stage outside the source tree to avoid copytree recursion.
+ set(SAILIFY_STAGING_DIR "/tmp/sailify_${CMAKE_PROJECT_NAME}")
+ file(REMOVE_RECURSE ${SAILIFY_STAGING_DIR})
+ 
++if(USE_SAIL)
++  # SAIL build: invoke the project-local sailify_cli directly.  We inject
++  # third_party/sailify into PYTHONPATH in the CMake process so the call is
++  # independent of any wrapper generated at conversion time.
++  find_package(Python3 REQUIRED COMPONENTS Interpreter)
++
++  set(SAILIFY_DIR ${CMAKE_SOURCE_DIR}/third_party/sailify)
++
++  set(SAILIFY_PYTHONPATH "${SAILIFY_DIR}")
++  if(DEFINED ENV{PYTHONPATH})
++    set(SAILIFY_PYTHONPATH "${SAILIFY_PYTHONPATH}:$ENV{PYTHONPATH}")
++  endif()
++  set(ENV{PYTHONPATH} "${SAILIFY_PYTHONPATH}")
++
++  set(SAILIFY_RUN_COMMAND ${Python3_EXECUTABLE} -m sailify_cli)
++else()
++  # Non-SAIL build: rely on the project-local wrapper generated earlier.
++  find_program(SAILIFY_COMMAND sailify)
++  if(NOT SAILIFY_COMMAND)
++    message(FATAL_ERROR
++      "sailify not found in PATH. Ensure the PPU SDK environment is "
++      "sourced (e.g. source PPU_SDK/envsetup.sh ppu) before running cmake.")
++  endif()
++
++  set(SAILIFY_RUN_COMMAND ${SAILIFY_COMMAND})
++endif()
++
+ # --includes patterns cover both top-level (gloo/*.ext) and nested
+ # (gloo/**/*.ext) source files.
+ execute_process(
+-  COMMAND ${SAILIFY_COMMAND}
++  COMMAND ${SAILIFY_RUN_COMMAND}
+           ${PROJECT_SOURCE_DIR}
+           --output-directory ${SAILIFY_STAGING_DIR}
+           --excludes build .git
