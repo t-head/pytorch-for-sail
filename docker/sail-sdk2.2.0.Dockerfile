@@ -1,4 +1,4 @@
-# PyTorch-for-SAIL 2.10 runtime environment on T-Head SAIL SDK v2.2 (hggcrt3).
+# PyTorch-for-SAIL 2.13 runtime environment on T-Head SAIL SDK v2.2 (hggcrt3).
 
 ARG BASE_IMAGE=download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
 FROM ${BASE_IMAGE}
