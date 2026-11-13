@@ -1,4 +1,4 @@
-# PyTorch-for-SAIL 2.13 runtime environment on T-Head SAIL SDK v2.2 (hggcrt3).
+# PyTorch-for-SAIL 2.10 runtime environment on T-Head SAIL SDK v2.2 (hggcrt3).
 
 ARG BASE_IMAGE=download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
 FROM ${BASE_IMAGE}
@@ -10,9 +10,9 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 
 ARG SAIL_PIP_INDEX=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
 ARG SAIL_PACKAGES="\
-    triton==3.7.0+v0.1.0.sail2.2.1 \
-    # torch commit id: 3ca36da996a9ec9652816bb711df6f17a95a789a
-    torch==2.13.0+v0.1.0.sail2.2.1"
+    triton==3.6.0+v0.3.0.sail2.2.0 \
+    # torch commit id: 3ca36da996a9ec9652816bb711df6f17a95a789a,sail2.2.1
+    torch==2.10.0+v0.2.0.sail2.2.0"
 
 
 ARG PCCL_VERSION=2.2.2
@@ -22,7 +22,7 @@ ARG PCCL_TARBALL=pccl_${PCCL_HGGCRT}_${PCCL_OS}-v${PCCL_VERSION}.tar.gz
 ARG PCCL_URL=https://download.t-head.cn/artifactory/ptgai-generic-release/COMM/v${PCCL_VERSION}/${PCCL_TARBALL}
 
 LABEL org.opencontainers.image.title="PyTorch-for-SAIL SDK v2.2.1 runtime" \
-      org.opencontainers.image.description="PyTorch-for-SAIL 2.13.0 with triton and PCCL ${PCCL_VERSION} (SAIL / hggcrt3)"
+      org.opencontainers.image.description="PyTorch-for-SAIL 2.10.0 with triton and PCCL ${PCCL_VERSION} (SAIL / hggcrt3)"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
