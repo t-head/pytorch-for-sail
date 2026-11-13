@@ -11,7 +11,7 @@ ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 ARG SAIL_PIP_INDEX=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
 ARG SAIL_PACKAGES="\
     triton==3.7.0+v0.1.0.sail2.2.1 \
-    # torch commit id 3ca36da996a9ec9652816bb711df6f17a95a789a
+    # torch commit id: 3ca36da996a9ec9652816bb711df6f17a95a789a
     torch==2.13.0+v0.1.0.sail2.2.1"
 
 
