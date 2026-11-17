@@ -11,7 +11,7 @@ source "$(dirname "$0")/ccache_env.sh"
 
 cd "$REPO_DIR"
 pip install -r requirements.txt
-
+pip install numpy==2.1.0
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
 
 echo "[build_wheel] Cleaning the old build directory before each build"
