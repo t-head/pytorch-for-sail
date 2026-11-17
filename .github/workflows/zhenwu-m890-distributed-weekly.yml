@@ -140,7 +140,7 @@ jobs:
         run: rm -rf .git
 
       - name: "zhenwu-m890 distributed tests"
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           nnodes: 0
           nproc_per_node: 2
