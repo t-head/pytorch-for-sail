@@ -36,11 +36,6 @@ on:
         required: true
         type: string
         default: '[""]'
-      sdk_versions:
-        description: 'JSON array; allowed values: 2.1.1, 2.2.0'
-        required: true
-        type: string
-        default: '["2.2.0"]'
       branch:
         description: 'Source branch, tag, or full commit SHA; leave empty to use the commit that triggered the workflow'
         required: false
@@ -96,7 +91,6 @@ jobs:
       os_versions: ${{ inputs.os_versions || '["ubuntu2404"]' }}
       runtime_versions: ${{ inputs.runtime_versions || '["13.0.0"]' }}
       torch_versions: ${{ inputs.torch_versions || '[""]' }}
-      sdk_versions: ${{ inputs.sdk_versions || '["2.2.0"]' }}
       branch: ${{ inputs.branch || '' }}
       package_version: ${{ inputs.package_version || '2.10.0' }}
       package_edition: ${{ inputs.package_edition || 'oe' }}
@@ -104,21 +98,17 @@ jobs:
       build_command: |
         ${{ inputs.build_command || 'unset PIP_INDEX_URL
         source /usr/local/PPU_SDK/envsetup.sh || true
-        pip install setuptools-scm==9.2.2
-        pip install numpy==2.1.0
-        pip install --upgrade setuptools wheel typing_extensions
-        python3 -m pip show setuptools setuptools-scm packaging wheel typing_extensions
-        export NCCL_INCLUDE_DIR="/usr/local/pccl/nccl_wrapper/include"
-        export NCCL_LIB_DIR="/usr/local/pccl/nccl_wrapper/lib"
-        export PYTORCH_VERSION="2.10.0"
-        export PYTORCH_BUILD_VERSION="2.10.0"
+        source /usr/local/pccl/envsetup.sh release
+        export PCCL_INCLUDE_DIR="$PCCL_HOME/include"
+        export PCCL_LIB_DIR="$PCCL_HOME/lib"
+        export USE_SAIL=1
+        export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
+        export USE_PCCL=1
+        export USE_FLASH_ATTENTION=1
+        export USE_MEM_EFF_ATTENTION=1
+        export BUILD_TEST=1
+        export MAX_JOBS=128
+        export PYTORCH_VERSION=2.10.0
+        export PYTORCH_BUILD_VERSION=2.10.0
         export PYTORCH_BUILD_NUMBER=0
-        export USE_FLASH_ATTENTION=True
-        export USE_MEM_EFF_ATTENTION=True
-        export USE_NCCL=True
-        export USE_DISTRIBUTED=True
-        export USE_SYSTEM_NCCL=1
-        export BUILD_CAFFE2=False
-        export BUILD_TEST=True
-        export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
         python3 setup.py bdist_wheel' }}
