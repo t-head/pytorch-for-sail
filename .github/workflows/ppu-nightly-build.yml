@@ -1,0 +1,124 @@
+name: Nightly Build Pytorch
+
+on:
+  schedule:
+    # Daily at 11:30 UTC (19:30 Beijing time)
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+    inputs:
+      package_name:
+        description: 'Name of the package to build and upload'
+        required: true
+        type: string
+        default: torch
+      framework:
+        description: 'Name of the dependent framework, e.g. torch'
+        required: true
+        type: string
+        default: ''
+      python_versions:
+        description: 'JSON array; allowed values: 38, 310, 312'
+        required: true
+        type: string
+        default: '["312"]'
+      os_versions:
+        description: 'JSON array; allowed values: ubuntu2004, ubuntu2204, ubuntu2404, alios7u2'
+        required: true
+        type: string
+        default: '["ubuntu2404"]'
+      runtime_versions:
+        description: 'JSON array; allowed HGGCRT versions: 13.0.0'
+        required: true
+        type: string
+        default: '["13.0.0"]'
+      torch_versions:
+        description: 'JSON array; allowed values: 2.13.0; [""] skips Torch installation'
+        required: true
+        type: string
+        default: '[""]'
+      sdk_versions:
+        description: 'JSON array; allowed values: 2.1.1, 2.2.0'
+        required: true
+        type: string
+        default: '["2.2.0"]'
+      branch:
+        description: 'Source branch, tag, or full commit SHA; leave empty to use the commit that triggered the workflow'
+        required: false
+        type: string
+      package_version:
+        description: 'Artifactory package version and automatic upload directory prefix; does not override the wheel version'
+        required: true
+        type: string
+        default: '2.10.0'
+      package_edition:
+        description: 'Artifactory package edition; defaults to oe, matching the release workflow'
+        required: true
+        type: string
+        default: oe
+      package_type:
+        description: 'Artifactory package type; defaults to pypi'
+        required: false
+        type: string
+        default: pypi
+      runs_on:
+        description: 'Runner for all template jobs; a single label, or a JSON array such as ["self-hosted","x86-ubuntu2404-8-32"]'
+        required: true
+        type: string
+        default: x86-ubuntu2404-8-32
+      build_command:
+        description: 'Custom Bash build command; leave empty to use the default; only trusted configuration is accepted'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: nightly-build-${{ inputs.branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: flytiger-eco/shared-workflows/.github/workflows/nightly-build.yml@main
+    secrets:
+      template_token: ${{ secrets.TEMPLATE_TOKEN }}
+      release_username: ${{ secrets.RELEASE_USERNAME }}
+      release_token: ${{ secrets.RELEASE_TOKEN }}
+    with:
+      # Scheduled and push runs have no inputs; use the same defaults as manual runs.
+      package_name: ${{ inputs.package_name || 'torch' }}
+      framework: ${{ inputs.framework || '' }}
+      template_repository: flytiger-eco/shared-workflows
+      template_ref: main
+      runs_on: ${{ inputs.runs_on || 'x86-ubuntu2404-64-256' }}
+      python_versions: ${{ inputs.python_versions || '["312"]' }}
+      os_versions: ${{ inputs.os_versions || '["ubuntu2404"]' }}
+      runtime_versions: ${{ inputs.runtime_versions || '["13.0.0"]' }}
+      torch_versions: ${{ inputs.torch_versions || '[""]' }}
+      sdk_versions: ${{ inputs.sdk_versions || '["2.2.0"]' }}
+      branch: ${{ inputs.branch || '' }}
+      package_version: ${{ inputs.package_version || '2.10.0' }}
+      package_edition: ${{ inputs.package_edition || 'oe' }}
+      package_type: ${{ inputs.package_type || 'pypi' }}
+      build_command: |
+        ${{ inputs.build_command || 'unset PIP_INDEX_URL
+        source /usr/local/PPU_SDK/envsetup.sh || true
+        pip install setuptools-scm==9.2.2
+        pip install numpy==2.1.0
+        pip install --upgrade setuptools wheel typing_extensions
+        python3 -m pip show setuptools setuptools-scm packaging wheel typing_extensions
+        export NCCL_INCLUDE_DIR="/usr/local/pccl/nccl_wrapper/include"
+        export NCCL_LIB_DIR="/usr/local/pccl/nccl_wrapper/lib"
+        export PYTORCH_VERSION="2.10.0"
+        export PYTORCH_BUILD_VERSION="2.10.0"
+        export PYTORCH_BUILD_NUMBER=0
+        export USE_FLASH_ATTENTION=True
+        export USE_MEM_EFF_ATTENTION=True
+        export USE_NCCL=True
+        export USE_DISTRIBUTED=True
+        export USE_SYSTEM_NCCL=1
+        export BUILD_CAFFE2=False
+        export BUILD_TEST=True
+        export TORCH_CUDA_ARCH_LIST="8.0a;8.9"
+        python3 setup.py bdist_wheel' }}
