@@ -2548,6 +2548,8 @@ class CudaKernelParamCache:
         basename, _ = get_name_and_dir_from_output_file_path(bin_path)
 
         if config.aot_inductor.emit_multi_arch_kernel:
+            if bin_type == "cubin" and torch.version.sail is not None:
+                raise RuntimeError("emit_multi_arch_kernel=True is not supported on PPU")
             # Distinct from the single-arch .hsaco the JIT pass reloads, so
             # the multi-arch bundle doesn't clobber it.
             bin_type_to_ext = {
@@ -2571,8 +2573,10 @@ class CudaKernelParamCache:
             config.aot_inductor.emit_multi_arch_kernel
             or config.aot_inductor.package_cpp_only
         ):
-            # Allow ROCm single-arch to skip (asm=None OK), require for everything else
-            if torch.version.hip is None or (asm and asm_type):
+            # ROCm and SAIL single-arch binaries do not require assembly.
+            if (bin_type != "cubin" or torch.version.sail is None) and (
+                torch.version.hip is None or (asm and asm_type)
+            ):
                 if not asm:
                     raise AssertionError("Missing kernel assembly code")
                 if not asm_type:
