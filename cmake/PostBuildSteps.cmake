@@ -26,6 +26,15 @@ install(CODE "
   )
 ")
 
+# Copy compat headers after wrapping so stable-ABI guards do not alter them.
+# This layout matches runtime includes of <.ppu_compat/compatible_wrapper.h>.
+if(USE_SAIL AND IS_DIRECTORY "${PROJECT_SOURCE_DIR}/.ppu_compat")
+  install(DIRECTORY "${PROJECT_SOURCE_DIR}/.ppu_compat"
+    DESTINATION "${TORCH_INSTALL_INCLUDE_DIR}"
+    FILES_MATCHING PATTERN "*.h"
+  )
+endif()
+
 # --- Compile commands merging ---
 # Merge compile_commands.json from build subdirectories.
 add_custom_target(merge_compile_commands ALL

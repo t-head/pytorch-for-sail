@@ -2775,7 +2775,10 @@ class CppBuilder:
                 hgcc_path = cpp_extension._join_ppu_home("bin", "hgcc")
                 ppu_include = cpp_extension._join_ppu_home("include")
                 ppu_lib = cpp_extension._join_ppu_home("lib")
-                ppu_compat_dir = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+                # Reuse the packaged wrapper to preserve the build-time compatibility version.
+                ppu_compat_dir = os.path.join(
+                    os.path.dirname(torch.__file__), "include", ".ppu_compat"
+                )
                 if current_arch is None:
                     raise RuntimeError("Unable to determine PPU architecture")
                 ppu_arch = _ppu_arch_from_cuda_arch(current_arch)

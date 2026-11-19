@@ -247,6 +247,8 @@ def run_sailify_conversion(
     output_dir: str | None = None,
     force: bool = False,
     in_place_explicit: bool = False,
+    inject_compat_include: bool | None = None,
+    inject_compat_include_ignores: list[str] | None = None,
 ) -> bool:
     """Convert this tree's CUDA sources to PPU.
 
@@ -278,11 +280,29 @@ def run_sailify_conversion(
                 "omit it to rewrite this tree in place instead."
             )
 
+    # Explicit CLI/API values override the environment; injection defaults to on.
+    if inject_compat_include is None:
+        inject_compat_include = str2bool(
+            os.getenv("SAILIFY_INJECT_COMPAT_INCLUDE", "1")
+        )
+    if inject_compat_include_ignores is None:
+        # AOTI codegen compares shim text for ABI checks; an empty list removes this exemption.
+        inject_compat_include_ignores = [
+            "torch/csrc/inductor/aoti_torch/generated/**",
+        ]
+    # Cache validity also depends on injection settings, not just source changes.
+    conversion_options = (
+        f"inject_compat_include: {inject_compat_include}\n"
+        f"inject_compat_include_ignores: {inject_compat_include_ignores!r}\n"
+    )
     marker = Path(out_dir, SAILIFY_MARKER)
     fingerprint = _sailify_fingerprint(source_root)
     if marker.is_file() and not force:
         previous = marker.read_text(encoding="utf-8")
-        if f"fingerprint: {fingerprint}\n" in previous:
+        if (
+            f"fingerprint: {fingerprint}\n" in previous
+            and conversion_options in previous
+        ):
             print(
                 f"sailify: {out_dir} is already up to date ({fingerprint}); "
                 "skipping conversion. Use --force to convert anyway."
@@ -332,6 +352,8 @@ def run_sailify_conversion(
         output_directory="" if in_place else out_dir,
         extra_mapping=extra_mapping,
         ignores=ignores,
+        inject_compat_include=inject_compat_include,
+        inject_compat_include_ignores=inject_compat_include_ignores,
         verbose=True,
     )
     n_ok = sum(1 for r in results.values() if r.status == "ok")
@@ -352,7 +374,7 @@ def run_sailify_conversion(
 
     marker.write_text(
         f"source: {source_root}\nin_place: {in_place}\n"
-        f"fingerprint: {fingerprint}\n",
+        f"fingerprint: {fingerprint}\n{conversion_options}",
         encoding="utf-8",
     )
     if not in_place:
@@ -542,6 +564,8 @@ def run_full_sailify(
     *,
     output_dir: str | None = None,
     force: bool = False,
+    inject_compat_include: bool | None = None,
+    inject_compat_include_ignores: list[str] | None = None,
 ) -> bool:
     """Run the full SAIL pre-build pipeline.
 
@@ -565,6 +589,8 @@ def run_full_sailify(
         source_root,
         output_dir=output_dir,
         force=force,
+        inject_compat_include=inject_compat_include,
+        inject_compat_include_ignores=inject_compat_include_ignores,
     )
 
     target = source_root if in_place else Path(os.path.abspath(output_dir))  # type: ignore[arg-type]
