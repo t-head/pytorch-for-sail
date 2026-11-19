@@ -6,7 +6,7 @@ FROM ${BASE_IMAGE}
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG ALIYUN_PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
 
 ARG SAIL_PIP_INDEX=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
 ARG SAIL_PACKAGES="\
@@ -26,7 +26,7 @@ LABEL org.opencontainers.image.title="PyTorch-for-SAIL SDK v2.2.1 runtime" \
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_ROOT_USER_ACTION=ignore \
-    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_INDEX_URL=${SAIL_PIP_INDEX} \
     PPU_SDK=/usr/local/PPU_SDK \
     PCCL_HOME=/usr/local/pccl \
     PCCL_INCLUDE_DIR=/usr/local/pccl/include \
@@ -58,6 +58,7 @@ RUN set -eux; \
     ls -l "${PCCL_LIB_DIR}"/libpccl.so*
 
 RUN python3 -m pip install --no-cache-dir \
+        --index-url ${ALIYUN_PIP_INDEX} \
         "setuptools>=70.1.0" \
         wheel \
         packaging \
@@ -68,16 +69,7 @@ RUN python3 -m pip install --no-cache-dir \
         fsspec \
         filelock \
         "scipy==1.13.1" \
-        "expecttest==0.3.0" \
-        "numpy==2.1.0" \
-        "hypothesis==6.56.4" \
-        psutil \
-        "pytest==7.3.2" \
-        "pytest-xdist==3.3.1" \
-        "pytest-rerunfailures==14.0" \
-        "pytest-flakefinder==1.1.0" \
-        "pytest-subtests==0.13.1" \
-        "unittest-xml-reporting>=2.0.0,<=3.2.0"
+        "numpy==2.1.0"
 
 RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
     && for spec in ${SAIL_PACKAGES}; do \
