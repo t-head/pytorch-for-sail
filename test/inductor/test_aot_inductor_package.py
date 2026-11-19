@@ -432,6 +432,8 @@ class TestAOTInductorPackage(TestCase):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest(f"Only meant to test {GPU_TYPE}")
         self.check_package_cpp_only()
+        if self.device == "cuda" and torch.version.sail is not None:
+            raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
             def __init__(self) -> None:
