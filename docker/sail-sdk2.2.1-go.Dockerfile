@@ -6,12 +6,12 @@ FROM ${BASE_IMAGE}
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
-
+ARG ALIYUN_PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
 ARG SAIL_PIP_INDEX=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
+
+# torch==2.13.0+v0.1.0.gotag.ppu2.2.1, gotag commit==42d9b1c1e902f1e13ead0be76fc2422396db12d0
 ARG SAIL_PACKAGES="\
-    triton==3.7.0+v0.1.0.sail2.2.0 \
-    # torch commit id: 942683ffe74998a173f6ada9e1e68acc39415d83,sail2.2.1
+    triton==3.7.1+v0.1.0.sail2.2.0 \
     torch==2.13.0+v0.1.0.sail2.2.0"
 
 ARG PCCL_VERSION=2.2.2
@@ -26,7 +26,7 @@ LABEL org.opencontainers.image.title="PyTorch-for-SAIL SDK v2.2.1 runtime" \
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_ROOT_USER_ACTION=ignore \
-    PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_INDEX_URL=${SAIL_PIP_INDEX} \
     PPU_SDK=/usr/local/PPU_SDK \
     PCCL_HOME=/usr/local/pccl \
     PCCL_INCLUDE_DIR=/usr/local/pccl/include \
@@ -58,26 +58,87 @@ RUN set -eux; \
     ls -l "${PCCL_LIB_DIR}"/libpccl.so*
 
 RUN python3 -m pip install --no-cache-dir \
-        "setuptools>=70.1.0" \
-        wheel \
-        packaging \
-        "typing-extensions>=4.15" \
-        "sympy>=1.13.3" \
-        "networkx>=2.5.1" \
-        jinja2 \
-        fsspec \
-        filelock \
-        "scipy==1.13.1" \
-        "expecttest==0.3.0" \
+        --index-url ${ALIYUN_PIP_INDEX} \
+        "absl-py==2.1.0" \
+        "appdirs==1.4.4" \
+        "astunparse==1.6.3" \
+        "attrs==26.1.0" \
+        "audioread==3.0.1" \
+        "cachetools==5.3.3" \
+        "certifi==2022.9.24" \
+        "cffi==1.15.0" \
+        "charset-normalizer==2.0.12" \
+        "cloud-tpu-client==0.10" \
+        "coloredlogs==15.0.1" \
+        "dataclasses==0.6" \
+        "dateparser==1.1.7" \
+        "decorator==5.1.1" \
+        "elastic-transport==8.4.0" \
+        "elasticsearch==8.5.3" \
+        "expecttest==0.2.1" \
+        "filelock==3.6.0" \
+        "flatbuffers==23.1.4" \
+        "fsspec==2023.3.0" \
+        "future==0.18.2" \
+        "google-api-core==1.34.1" \
+        "google-api-python-client==1.8.0" \
+        "google-auth==2.29.0" \
+        "google-auth-httplib2==0.2.0" \
+        "googleapis-common-protos==1.63.0" \
+        "httplib2==0.22.0" \
+        "huggingface-hub==0.17.3" \
+        "humanfriendly==10.0" \
+        "hypothesis==6.103.4" \
+        "idna==3.3" \
+        "importlib-metadata==4.11.3" \
+        "intel-openmp==2021.1.1" \
+        "iopath==0.1.10" \
+        "Jinja2==3.1.2" \
+        "joblib==1.4.0" \
+        "llvmlite==0.44.0" \
+        "MarkupSafe==2.1.3" \
+        "mpmath==1.2.1" \
+        "networkx==3.0" \
+        "ninja==1.10.0" \
+        "numba==0.61.0" \
         "numpy==2.1.0" \
-        "hypothesis==6.56.4" \
-        psutil \
-        "pytest==7.3.2" \
-        "pytest-xdist==3.3.1" \
-        "pytest-rerunfailures==14.0" \
-        "pytest-flakefinder==1.1.0" \
-        "pytest-subtests==0.13.1" \
-        "unittest-xml-reporting>=2.0.0,<=3.2.0"
+        "oauth2client==4.1.3" \
+        "packaging==22.0" \
+        "Pillow==10.1.0" \
+        "pooch==1.6.0" \
+        "portalocker==2.6.0" \
+        "protobuf==3.20.3" \
+        "pyasn1==0.6.4" \
+        "pyasn1_modules==0.4.0" \
+        "pycparser==2.21" \
+        "pyparsing==3.0.8" \
+        "python-dateutil==2.8.2" \
+        "pytz==2022.1" \
+        "pytz-deprecation-shim==0.1.0.post0" \
+        "PyYAML==6.0.2" \
+        "regex==2022.10.31" \
+        "resampy==0.4.2" \
+        "rsa==4.9" \
+        "safetensors==0.4.0" \
+        "scikit-learn==1.4.2" \
+        "scipy==1.13.1" \
+        "setuptools>=70.1.0" \
+        "six==1.16.0" \
+        "sortedcontainers==2.4.0" \
+        "SoundFile==0.10.3.post1" \
+        "sympy==1.14.0" \
+        "tbb==2021.1.1" \
+        "threadpoolctl==3.1.0" \
+        "tifffile==2022.10.10" \
+        "tlparse==0.3.20" \
+        "tokenizers==0.20.3" \
+        "tqdm==4.64.0" \
+        "typing-extensions>=4.15" \
+        "tzdata==2022.7" \
+        "tzlocal==4.2" \
+        "uritemplate==3.0.1" \
+        "urllib3==1.26.16" \
+        "zipp==3.8.0"
 
 RUN source "${PPU_SDK}/envsetup.sh" >/dev/null \
     && for spec in ${SAIL_PACKAGES}; do \
