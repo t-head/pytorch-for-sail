@@ -3,6 +3,7 @@ import functools
 import os
 import re
 
+
 # It is not a good idea to directly apply sailify to codegen, which will be vulnerable to cases like:
 #   "...
 #    from ..codecache import CudaKernelParamCache
@@ -21,14 +22,17 @@ import re
 # _ensure_compat_header() reuses it if present; otherwise it regenerates with
 # default config via write_compat_wrapper_header().
 
+
 # Detect SAIL platform via torch.version.sail (build-time marker, non-None
 # only for USE_SAIL builds), mirroring torch.version.hip for ROCm.
 def _detect_ppu() -> bool:
     try:
         import torch
-        return getattr(torch.version, 'sail', None) is not None
+
+        return getattr(torch.version, "sail", None) is not None
     except Exception:
         return False
+
 
 _IS_PPU = _detect_ppu()
 
@@ -37,7 +41,8 @@ _IS_PPU = _detect_ppu()
 def _get_compat_header_dir() -> str:
     """Return the directory where compatible_wrapper.h is cached for Inductor."""
     import torch
-    base = os.path.join(os.path.dirname(torch.__file__), '.ppu_compat')
+
+    base = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -54,10 +59,11 @@ def _ensure_compat_header() -> str:
     Uses lru_cache so the header is generated only once per process.
     """
     compat_dir = _get_compat_header_dir()
-    header_path = os.path.join(compat_dir, 'compatible_wrapper.h')
+    header_path = os.path.join(compat_dir, "compatible_wrapper.h")
     if not os.path.isfile(header_path):
         try:
             from torch.sailify.sailify_python import write_compat_wrapper_header
+
             write_compat_wrapper_header(compat_dir)
         except ImportError:
             pass  # sailify not available; header won't exist, but that's OK

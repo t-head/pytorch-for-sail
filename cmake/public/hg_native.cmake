@@ -90,7 +90,7 @@ endmacro()
 # ppu_select_hgcc_arch_flags(<output_variable> [extra_arch ...])
 function(ppu_select_hgcc_arch_flags _outvar)
   if((DEFINED TORCH_CUDA_ARCH_LIST AND NOT TORCH_CUDA_ARCH_LIST STREQUAL "")
-     OR (DEFINED ENV{TORCH_CUDA_ARCH_LIST} AND NOT "$ENV{TORCH_CUDA_ARCH_LIST}" STREQUAL ""))
+     OR(DEFINED ENV{TORCH_CUDA_ARCH_LIST} AND NOT "$ENV{TORCH_CUDA_ARCH_LIST}" STREQUAL ""))
     message(FATAL_ERROR
       "PPU: SAIL builds do not support TORCH_CUDA_ARCH_LIST. "
       "Unset it and configure PYTORCH_SAIL_ARCH with ppu_10, ppu_15, "

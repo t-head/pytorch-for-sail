@@ -21,6 +21,7 @@ from pathlib import Path
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def str2bool(value: str | None) -> bool:
     if value is None:
         return False
@@ -34,9 +35,7 @@ def check_path_exists(path: str) -> None:
         )
 
 
-def _missing_submodule_error(
-    torch_root: str, submodule_path: str
-) -> FileNotFoundError:
+def _missing_submodule_error(torch_root: str, submodule_path: str) -> FileNotFoundError:
     return FileNotFoundError(
         "Required third-party source is missing: "
         f"{os.path.join(torch_root, submodule_path)}\n"
@@ -50,6 +49,7 @@ def _missing_submodule_error(
 # ---------------------------------------------------------------------------
 # Patch application
 # ---------------------------------------------------------------------------
+
 
 def apply_patch(patch_file: str, target_root: str) -> None:
     if not os.path.isfile(patch_file):
@@ -72,9 +72,7 @@ def apply_patch(patch_file: str, target_root: str) -> None:
         return
     if dry_run.returncode != 0:
         print(f"error_output: {combined_output}")
-        raise RuntimeError(
-            f"Failed to validate patch before applying: {patch_file}"
-        )
+        raise RuntimeError(f"Failed to validate patch before applying: {patch_file}")
     subprocess.run(command, cwd=target_root, check=True)
     print(f"Apply patch: {patch_file}")
 
@@ -113,19 +111,21 @@ def apply_fa_patches_with_markers(
     namespace_patch: str, num_splits_patch: str, fa_root: str
 ) -> None:
     """Apply the flash-attention patches idempotently."""
-    namespace_header = Path(
-        fa_root, "csrc", "flash_attn", "src", "namespace_config.h"
-    )
-    if namespace_header.is_file() and "FLASH_NAMESPACE_CONFIG_H" in namespace_header.read_text(
-        encoding="utf-8", errors="replace"
+    namespace_header = Path(fa_root, "csrc", "flash_attn", "src", "namespace_config.h")
+    if (
+        namespace_header.is_file()
+        and "FLASH_NAMESPACE_CONFIG_H"
+        in namespace_header.read_text(encoding="utf-8", errors="replace")
     ):
         print("flash-attention namespace patch already applied, skipping.")
     else:
         apply_patch(namespace_patch, fa_root)
 
     flash_api = Path(fa_root, "csrc", "flash_attn", "flash_api.cpp")
-    if flash_api.is_file() and "num_splits is not supported on PPU" in flash_api.read_text(
-        encoding="utf-8", errors="replace"
+    if (
+        flash_api.is_file()
+        and "num_splits is not supported on PPU"
+        in flash_api.read_text(encoding="utf-8", errors="replace")
     ):
         print("flash-attention num_splits guard already applied, skipping.")
     else:
@@ -142,8 +142,10 @@ def apply_kineto_sail_patch(patch_file: str, kineto_root: str) -> None:
     of nvcc/CUDA toolkit layout.
     """
     cmake_lists = Path(kineto_root, "libkineto", "CMakeLists.txt")
-    if cmake_lists.is_file() and "PPU SAIL: skip CUDAToolkit probe" in cmake_lists.read_text(
-        encoding="utf-8", errors="replace"
+    if (
+        cmake_lists.is_file()
+        and "PPU SAIL: skip CUDAToolkit probe"
+        in cmake_lists.read_text(encoding="utf-8", errors="replace")
     ):
         print("kineto SAIL CMake patch already applied, skipping.")
         return
@@ -159,7 +161,12 @@ SAILIFY_MARKER = ".sailify_done"
 
 _SAILIFY_EXTS = (".cu", ".cuh", ".c", ".cc", ".cpp", ".h", ".hpp", ".inl")
 _SAILIFY_FINGERPRINT_EXTS = _SAILIFY_EXTS + (
-    ".py", ".cmake", ".txt", ".json", ".patch", ".in",
+    ".py",
+    ".cmake",
+    ".txt",
+    ".json",
+    ".patch",
+    ".in",
 )
 _SAILIFY_SKIP_DIRS = {".git", "build", "dist", "__pycache__", ".ppu_compat"}
 
@@ -186,7 +193,13 @@ def apply_gloo_sailify_cmake_patch(source_root: Path) -> None:
         print("gloo-for-sail Sailify.cmake patch already applied, skipping.")
         return
 
-    patch_file = source_root / "tools" / "sailify" / "patches" / "gloo-for-sail-cmake-sailify.patch"
+    patch_file = (
+        source_root
+        / "tools"
+        / "sailify"
+        / "patches"
+        / "gloo-for-sail-cmake-sailify.patch"
+    )
     if not patch_file.is_file():
         raise FileNotFoundError(
             f"gloo Sailify.cmake patch not found at {patch_file}. "
@@ -200,9 +213,7 @@ def _sailify_fingerprint(source_root: Path) -> str:
     digest = hashlib.sha256()
     count = 0
     for dirpath, dirnames, filenames in os.walk(source_root):
-        dirnames[:] = sorted(
-            d for d in dirnames if d not in _SAILIFY_SKIP_DIRS
-        )
+        dirnames[:] = sorted(d for d in dirnames if d not in _SAILIFY_SKIP_DIRS)
         for name in sorted(filenames):
             if not name.endswith(_SAILIFY_FINGERPRINT_EXTS):
                 continue
@@ -212,12 +223,8 @@ def _sailify_fingerprint(source_root: Path) -> str:
             except OSError:
                 continue
             relative_path = os.path.relpath(path, source_root)
-            digest.update(
-                relative_path.encode("utf-8", errors="surrogateescape")
-            )
-            digest.update(
-                f"\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode()
-            )
+            digest.update(relative_path.encode("utf-8", errors="surrogateescape"))
+            digest.update(f"\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
             count += 1
     return f"sources={count} metadata_sha256={digest.hexdigest()}"
 
@@ -258,8 +265,7 @@ def run_sailify_conversion(
     """
     if in_place_explicit and output_dir:
         raise RuntimeError(
-            "SAILIFY_IN_PLACE and --output-dir are mutually exclusive; "
-            "choose one."
+            "SAILIFY_IN_PLACE and --output-dir are mutually exclusive; choose one."
         )
     in_place = in_place_explicit or not output_dir
     if in_place:
@@ -284,10 +290,7 @@ def run_sailify_conversion(
             if not in_place:
                 _print_sailify_handover(out_dir)
             return in_place
-        print(
-            "sailify: sources changed since the last conversion, "
-            "re-converting."
-        )
+        print("sailify: sources changed since the last conversion, re-converting.")
         print(f"  recorded: {previous.strip()}")
         print(f"  current : fingerprint: {fingerprint}")
         print(
@@ -320,10 +323,7 @@ def run_sailify_conversion(
             if pattern
         ),
     ]
-    print(
-        f"=== sailify: {source_root} -> "
-        f"{'(in place)' if in_place else out_dir} ==="
-    )
+    print(f"=== sailify: {source_root} -> {'(in place)' if in_place else out_dir} ===")
     if marker.is_file():
         marker.unlink()
 
@@ -344,8 +344,7 @@ def run_sailify_conversion(
     print(f"sailify: {n_ok} files converted, {n_skip} files skipped.")
     if failures:
         details = "\n".join(
-            f"  {path}: {status}"
-            for path, status in list(failures.items())[:20]
+            f"  {path}: {status}" for path, status in list(failures.items())[:20]
         )
         raise RuntimeError(
             f"sailify failed to convert {len(failures)} file(s):\n{details}"
@@ -400,6 +399,7 @@ def vendor_sailify_package(target_root: Path) -> None:
 # ---------------------------------------------------------------------------
 # SAIL build-environment initialization (pre-build step)
 # ---------------------------------------------------------------------------
+
 
 def init_ppu_build_env(source_root: Path) -> None:
     """Set up PCCL paths and PPU architecture before CMake configure.
@@ -486,6 +486,7 @@ def init_ppu_build_env(source_root: Path) -> None:
 # Patch orchestration
 # ---------------------------------------------------------------------------
 
+
 def apply_all_patches(source_root: Path) -> None:
     """Apply all third-party patches required for SAIL builds."""
     torch_root = str(source_root)
@@ -517,9 +518,7 @@ def apply_all_patches(source_root: Path) -> None:
         fa_num_splits_patch = os.path.join(
             patch_root, "flash_attention_num_splits_guard.patch"
         )
-        apply_fa_patches_with_markers(
-            fa_namespace_patch, fa_num_splits_patch, fa_root
-        )
+        apply_fa_patches_with_markers(fa_namespace_patch, fa_num_splits_patch, fa_root)
 
     # Kineto hgpti (CUPTI) backend patch
     kineto_root = os.path.join(patch_root, "kineto")
@@ -536,6 +535,7 @@ def apply_all_patches(source_root: Path) -> None:
 # ---------------------------------------------------------------------------
 # Main orchestrator
 # ---------------------------------------------------------------------------
+
 
 def run_full_sailify(
     source_root: Path,

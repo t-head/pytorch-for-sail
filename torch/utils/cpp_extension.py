@@ -563,7 +563,7 @@ def _sailify_nvcc_flags(flags: list[str]) -> list[str]:
 
         # Special handling for -gencode (not in the flat lookup table
         # because the value requires parsing and arch conversion).
-        if flag.startswith('-gencode') or flag.startswith('--gpu-code'):
+        if flag.startswith(('-gencode', '--gpu-code')):
             opt, eq, val = flag.partition('=')
             if eq:
                 # Value attached with '='
@@ -585,7 +585,7 @@ def _sailify_nvcc_flags(flags: list[str]) -> list[str]:
             continue
 
         # Special handling for --gpu-architecture / -arch (shorthand)
-        if flag.startswith('--gpu-architecture') or flag.startswith('-arch'):
+        if flag.startswith(('--gpu-architecture', '-arch')):
             opt, eq, val = flag.partition('=')
             if eq:
                 arch_val = val

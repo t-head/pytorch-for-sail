@@ -1412,11 +1412,11 @@ def _get_torch_related_args(
         libraries_dirs.append(config.aot_inductor.aoti_shim_library_path)
 
     if torch.version.sail is not None:
-        from torch.utils.cpp_extension import PPU_HOME
+        from torch.utils.cpp_extension import _join_ppu_home
 
         # AOT wrappers embed HG fatbins whose runtime symbols are not visible
         # to the host linker. Keep the SAIL runtime as an explicit dependency.
-        libraries_dirs.append(os.path.join(PPU_HOME, "lib"))
+        libraries_dirs.append(_join_ppu_home("lib"))
         libraries.extend(["hggc", "hggcrt1"])
 
     if _IS_WINDOWS:
@@ -2771,11 +2771,13 @@ class CppBuilder:
             current_arch = _nvcc_arch_as_compile_option()
             if torch.version.sail is not None:
                 from torch.utils import cpp_extension
-                ppu_home = cpp_extension.PPU_HOME
-                hgcc_path = os.path.join(ppu_home, "bin", "hgcc")
-                ppu_include = os.path.join(ppu_home, "include")
-                ppu_lib = os.path.join(ppu_home, "lib")
+
+                hgcc_path = cpp_extension._join_ppu_home("bin", "hgcc")
+                ppu_include = cpp_extension._join_ppu_home("include")
+                ppu_lib = cpp_extension._join_ppu_home("lib")
                 ppu_compat_dir = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+                if current_arch is None:
+                    raise RuntimeError("Unable to determine PPU architecture")
                 ppu_arch = _ppu_arch_from_cuda_arch(current_arch)
                 ppu_compat_cmake = ""
                 if os.path.isdir(ppu_compat_dir):
@@ -2853,10 +2855,13 @@ class CppBuilder:
                 )
             else:
                 from torch._inductor.codegen.cuda import compile_utils
+
                 cuda_arch = compile_utils._aoti_cuda_target_arch()
                 cuda_gencode_flags = "\n                                ".join(
                     f"-gencode {option}"
-                    for option in compile_utils._cuda_multi_arch_gencode_options(cuda_arch)
+                    for option in compile_utils._cuda_multi_arch_gencode_options(
+                        cuda_arch
+                    )
                 )
                 contents += textwrap.dedent(
                     f"""
@@ -2919,7 +2924,7 @@ class CppBuilder:
                 endfunction()
 
                 """
-            )
+                )
         elif device_type == "xpu":
             contents += textwrap.dedent(
                 """
