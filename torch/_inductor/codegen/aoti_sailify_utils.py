@@ -18,9 +18,9 @@ import re
 # compatible_wrapper.h.
 #
 # Version consistency: compatible_wrapper.h is pre-built during PyTorch
-# build and shipped in torch/.ppu_compat/ via torch_package_data.  At runtime,
-# _ensure_compat_header() reuses it if present; otherwise it regenerates with
-# default config via write_compat_wrapper_header().
+# build and installed into torch/include/.ppu_compat/ by CMake. At
+# runtime, _ensure_compat_header() reuses it if present; otherwise it
+# regenerates with default config via write_compat_wrapper_header().
 
 
 # Detect SAIL platform via torch.version.sail (build-time marker, non-None
@@ -42,7 +42,7 @@ def _get_compat_header_dir() -> str:
     """Return the directory where compatible_wrapper.h is cached for Inductor."""
     import torch
 
-    base = os.path.join(os.path.dirname(torch.__file__), ".ppu_compat")
+    base = os.path.join(os.path.dirname(torch.__file__), "include", ".ppu_compat")
     os.makedirs(base, exist_ok=True)
     return base
 
@@ -51,8 +51,8 @@ def _get_compat_header_dir() -> str:
 def _ensure_compat_header() -> str:
     """Ensure compatible_wrapper.h exists in the cache dir and return the dir.
 
-    If the header is already shipped in torch/.ppu_compat/ (via wheel
-    package_data), it is reused directly.  Otherwise, it is regenerated
+    If the header is already shipped in torch/include/.ppu_compat/ by the
+    CMake install rules, it is reused directly. Otherwise, it is regenerated
     via write_compat_wrapper_header(compat_dir) which writes headers
     directly to compat_dir.
 

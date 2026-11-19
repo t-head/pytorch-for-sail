@@ -30,6 +30,24 @@ def main() -> int:
         default=None,
         help="Path to the PyTorch source tree. Defaults to CWD.",
     )
+    parser.add_argument(
+        "--inject-compat-include",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Inject the compat include into converted headers (enabled by default). "
+            "Disable with SAILIFY_INJECT_COMPAT_INCLUDE=0 or --no-inject-compat-include."
+        ),
+    )
+    parser.add_argument(
+        "--inject-compat-include-ignore",
+        nargs="*",
+        default=None,
+        help=(
+            "Relative-path globs to exclude from compat include injection. "
+            "Defaults to generated AOTI shims; pass without values to clear the exemption."
+        ),
+    )
     args = parser.parse_args()
 
     source_root = Path(args.source_root) if args.source_root else Path.cwd()
@@ -41,6 +59,8 @@ def main() -> int:
             source_root,
             output_dir=args.output_dir,
             force=args.force,
+            inject_compat_include=args.inject_compat_include,
+            inject_compat_include_ignores=args.inject_compat_include_ignore,
         )
     except Exception as e:
         print(f"error: {e}", file=sys.stderr)

@@ -40,7 +40,50 @@ IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 
 
+@common.instantiate_parametrized_tests
 class TestCppExtensionImport(common.TestCase):
+    @common.parametrize("layout", ("source", "wheel", "both", "missing"))
+    @common.parametrize("torch_include_dirs", (True, False))
+    def test_ppu_compat_include_paths(self, layout, torch_include_dirs):
+        cpp_extension = torch.utils.cpp_extension
+        with tempfile.TemporaryDirectory() as root:
+            torch_path = os.path.join(root, "torch")
+            lib_include = os.path.join(torch_path, "include")
+            sdk_include = os.path.join(root, "sdk", "include")
+            if layout in ("source", "both"):
+                compat_dir = os.path.join(root, ".ppu_compat")
+                os.makedirs(compat_dir)
+                with open(os.path.join(compat_dir, "compatible_wrapper.h"), "w"):
+                    pass
+            if layout in ("wheel", "both"):
+                os.makedirs(os.path.join(lib_include, ".ppu_compat"))
+            with (
+                mock.patch.object(cpp_extension, "_TORCH_PATH", torch_path),
+                mock.patch.object(cpp_extension, "IS_HIP_EXTENSION", False),
+                mock.patch.object(cpp_extension, "IS_PPU_EXTENSION", True),
+                mock.patch.object(
+                    cpp_extension, "_join_ppu_home", return_value=sdk_include
+                ),
+            ):
+                paths = cpp_extension.include_paths("cuda", torch_include_dirs)
+                cpu_paths = cpp_extension.include_paths("cpu", torch_include_dirs)
+            expected_cpu = (
+                [
+                    lib_include,
+                    os.path.join(lib_include, "torch", "csrc", "api", "include"),
+                ]
+                if torch_include_dirs
+                else []
+            )
+            expected = [*expected_cpu, sdk_include]
+            if layout in ("source", "both"):
+                expected.append(root)
+            if layout in ("wheel", "both"):
+                expected.append(lib_include)
+            self.assertEqual(paths, expected)
+            # PPU compatibility paths must not leak into CPU-only extension builds.
+            self.assertEqual(cpu_paths, expected_cpu)
+
     def test_cython_not_loaded_with_import_cpp_extension(self):
         script = """
 import importlib.util
