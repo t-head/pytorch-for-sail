@@ -491,9 +491,7 @@ class TestCppExtensionJIT(common.TestCase):
                 os.environ,
                 {"PYTORCH_SAIL_ARCH": "ppu_15", "TORCH_CUDA_ARCH_LIST": ""},
             ):
-                self.assertEqual(
-                    _get_cuda_arch_flags(), ["--gpu-architecture=ppu_15"]
-                )
+                self.assertEqual(_get_cuda_arch_flags(), ["--gpu-architecture=ppu_15"])
                 self.assertEqual(
                     _get_cuda_arch_flags(["--gpu-architecture", "ppu_10"]), []
                 )
@@ -532,9 +530,7 @@ class TestCppExtensionJIT(common.TestCase):
                 os.environ,
                 {"PYTORCH_SAIL_ARCH": "", "TORCH_CUDA_ARCH_LIST": ""},
             ),
-            mock.patch.object(
-                torch._C, "_cuda_getArchFlags", return_value="ppu_99"
-            ),
+            mock.patch.object(torch._C, "_cuda_getArchFlags", return_value="ppu_99"),
         ):
             with self.assertRaisesRegex(RuntimeError, "Unsupported SAIL architecture"):
                 _get_cuda_arch_flags()
