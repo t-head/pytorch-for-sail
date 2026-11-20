@@ -4630,7 +4630,8 @@ class TestCudaCompileCommand(TestCase):
         cmd_no_extra_args: str = cuda_compile_command(
             ["abc.cu", "def.cu"], "output", "so"
         )
-        if "nvcc " not in cmd_no_extra_args:
+        expected_compiler = "hgcc" if torch.version.sail is not None else "nvcc"
+        if f"{expected_compiler} " not in cmd_no_extra_args:
             raise AssertionError(cmd_no_extra_args)
         if "abc.cu" not in cmd_no_extra_args:
             raise AssertionError(cmd_no_extra_args)
@@ -4641,7 +4642,7 @@ class TestCudaCompileCommand(TestCase):
         cmd_extra_args: str = cuda_compile_command(
             ["abc.cu", "def.cu"], "output", "so", ["-Wwhatever", "-nothing"]
         )
-        if "nvcc " not in cmd_extra_args:
+        if f"{expected_compiler} " not in cmd_extra_args:
             raise AssertionError(cmd_extra_args)
         if " -Wwhatever" not in cmd_extra_args:
             raise AssertionError(cmd_extra_args)
@@ -4657,7 +4658,7 @@ class TestCudaCompileCommand(TestCase):
             CUDACodeCache.compile("test123.cu", "so", ["-Wsomething"])
             check_output_mock.assert_called()
             cmd_parts: list[str] = check_output_mock.call_args[0][0]
-            if not cmd_parts[0].endswith("nvcc"):
+            if not cmd_parts[0].endswith(expected_compiler):
                 raise AssertionError(cmd_parts)
             if "-Wsomething" not in cmd_parts:
                 raise AssertionError(cmd_parts)
