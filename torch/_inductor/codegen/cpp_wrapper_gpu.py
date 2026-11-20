@@ -48,7 +48,7 @@ from ..utils import (
 )
 from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
-from .aoti_sailify_utils import maybe_sailify_code_wrapper, _IS_PPU
+from .aoti_sailify_utils import _IS_PPU, maybe_sailify_code_wrapper
 from .common import get_device_op_overrides, TritonScratchWorkspace
 from .cpp_utils import cexpr
 from .cpp_wrapper_cpu import CppWrapperCpu
@@ -1122,6 +1122,12 @@ class CppWrapperGpu(CppWrapperCpu):
                     _maybe_device_code_wrapper(
                         "AOTI_RUNTIME_CUDA_CHECK(cudaDeviceSynchronize());"
                     )
+                )
+            elif torch.version.sail is not None:
+                # Offline SAIL conversion skips Python codegen; translate the
+                # emitted driver call before compiling the C++ wrapper.
+                buffer.writeline(
+                    _maybe_device_code_wrapper("CUDA_DRIVER_CHECK(cuCtxSynchronize());")
                 )
             else:
                 buffer.writeline("CUDA_DRIVER_CHECK(cuCtxSynchronize());")

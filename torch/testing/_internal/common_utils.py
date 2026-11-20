@@ -5909,6 +5909,13 @@ def find_library_location(lib_name: str) -> Path:
     path = torch_root / 'lib' / lib_name
     if os.path.exists(path):
         return path
+    # Editable installs may place Python sources and native libraries
+    # in separate roots; use the native extension to locate installed libs.
+    native_file = getattr(torch._C, '__file__', None)
+    if native_file is not None:
+        path = Path(native_file).resolve().parent / 'lib' / lib_name
+        if os.path.exists(path):
+            return path
     torch_root = Path(__file__).resolve().parents[2]
     return torch_root / 'build' / 'lib' / lib_name
 
