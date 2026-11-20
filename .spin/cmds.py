@@ -70,15 +70,17 @@ def _updated_hashes(hash_file, files_to_hash):
 def regenerate_version():
     """Regenerate version.py."""
     import os
+
     cmd = [
         sys.executable,
         "-m",
         "tools.generate_torch_version",
         "--is-debug=false",
     ]
-    sail_ver = os.environ.get("SAIL_VERSION", "")
-    if sail_ver:
-        cmd.append(f"--sail-version={sail_ver}")
+    for backend in ("ppu", "sail"):
+        version = os.environ.get(f"{backend.upper()}_VERSION", "")
+        if version:
+            cmd.append(f"--{backend}-version={version}")
     spin.util.run(cmd)
 
 
