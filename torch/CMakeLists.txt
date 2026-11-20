@@ -544,12 +544,11 @@ if(CUDAToolkit_VERSION_MAJOR)
   set(CUDA_VERSION "${CUDAToolkit_VERSION_MAJOR}.${CUDAToolkit_VERSION_MINOR}")
 endif()
 
-# torch.version.ppu records the PPU SDK release version used by
-# CUDA-compatible SAIL builds. It differs from torch.version.cuda, which
-# records the CUDA compatibility version, and torch.version.sail, which
-# identifies SAIL builds.
+# torch.version.ppu identifies PPU CUDA-compatible builds only; native
+# SAIL builds use torch.version.sail even though USE_PPU is also enabled.
+# torch.version.cuda records the separate CUDA compatibility version.
 set(PPU_VERSION "")
-if(USE_PPU)
+if(USE_PPU AND NOT USE_SAIL)
   # Resolve the PPU SDK root with the same precedence as hg_native.cmake.
   if(DEFINED ENV{PPU_SDK})
     set(_ppu_sdk_root "$ENV{PPU_SDK}")

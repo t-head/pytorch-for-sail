@@ -144,6 +144,11 @@ if __name__ == "__main__":
     args.xpu_version = None if args.xpu_version == "" else args.xpu_version
     args.ppu_version = None if args.ppu_version == "" else args.ppu_version
     args.sail_version = None if args.sail_version == "" else args.sail_version
+    if args.ppu_version is not None and args.sail_version is not None:
+        parser.error(
+            "--ppu-version and --sail-version are mutually exclusive: "
+            "PPU marks CUDA-compatible builds, while SAIL marks native builds."
+        )
 
     pytorch_root = Path(__file__).parent.parent
     version_path = pytorch_root / "torch" / "version.py"
@@ -170,7 +175,7 @@ if __name__ == "__main__":
         f.write(f"hip: Optional[str] = {repr(args.hip_version)}\n")
         f.write(f"rocm: Optional[str] = {repr(args.rocm_version)}\n")
         f.write(f"xpu: Optional[str] = {repr(args.xpu_version)}\n")
-        # PPU SDK release version used for CUDA-compatible SAIL builds.
+        # PPU SDK release version only for USE_PPU builds without USE_SAIL.
         f.write(f"ppu: Optional[str] = {repr(args.ppu_version)}\n")
         # SAIL (sailify) marker: non-None ONLY in USE_SAIL builds,
         # so runtime code can tell SAIL apart from CUDA-compat/NVIDIA
