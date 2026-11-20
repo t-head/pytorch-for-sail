@@ -4630,7 +4630,7 @@ class TestCudaCompileCommand(TestCase):
         cmd_no_extra_args: str = cuda_compile_command(
             ["abc.cu", "def.cu"], "output", "so"
         )
-        expected_compiler = "hgcc" if torch.version.sail is not None else "nvcc"
+        expected_compiler = "hgcc" if getattr(torch.version, "sail", None) is not None else "nvcc"
         if f"{expected_compiler} " not in cmd_no_extra_args:
             raise AssertionError(cmd_no_extra_args)
         if "abc.cu" not in cmd_no_extra_args:
