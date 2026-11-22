@@ -66,6 +66,10 @@ The current version runs on the SAIL SDK v2.2.x with the matching PCCL release.
 
 Two Docker-based workflows are provided. Method 1 is the one verified during development. A ready-to-run script, [`docker/sail/build-sail.sh`](docker/sail/build-sail.sh), wraps the Method 1 build steps: `./docker/sail/build-sail.sh` builds in place, and `./docker/sail/build-sail.sh <output-dir>` converts out of place.
 
+> Download the T-Head SAIL SDK from the [T-Head Developer Center](https://developer.t-head.cn/download/index.html).
+> For compatibility, this documentation retains references to `PPU_SDK`. `PPU_SDK` refers to
+> the T-Head SAIL SDK; environment variable names and paths do not need to be changed.
+
 #### Method 1: `Dockerfile.sail-sdk2.2`
 
 [`Dockerfile.sail-sdk2.2`](docker/sail/Dockerfile.sail-sdk2.2) builds a compact environment image for the T-Head SAIL SDK v2.2.1 (hggcrt3). It upgrades the SDK bundled in the base image from v2.2.0 to v2.2.1, upgrades PCCL to v2.2.2, and pre-installs the Python packages needed to build PyTorch 2.14.1 (`scikit-build-core`, `spin`, and a matching `setuptools`). The source code is mounted from the host at build time instead of being copied into the image, keeping the image small. The image check, the two-stage build, and the hardware checks below are the ones verified during development.
