@@ -161,4 +161,4 @@
     ignore = dirty
     path = third_party/cmake-hgcc
     url = https://github.com/t-head/cmake-hgcc.git
-    branch = master
+    branch = main
