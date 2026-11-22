@@ -2780,7 +2780,7 @@ class CppBuilder:
                     os.path.dirname(torch.__file__), "include", ".ppu_compat"
                 )
                 if current_arch is None:
-                    raise RuntimeError("Unable to determine PPU architecture")
+                    raise RuntimeError("Unable to determine Zhenwu PPU architecture")
                 ppu_arch = _ppu_arch_from_cuda_arch(current_arch)
                 ppu_compat_cmake = ""
                 if os.path.isdir(ppu_compat_dir):

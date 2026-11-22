@@ -81,7 +81,7 @@ class TestCppExtensionImport(common.TestCase):
             if layout in ("wheel", "both"):
                 expected.append(lib_include)
             self.assertEqual(paths, expected)
-            # PPU compatibility paths must not leak into CPU-only extension builds.
+            # Zhenwu PPU compatibility paths must not leak into CPU-only extension builds.
             self.assertEqual(cpu_paths, expected_cpu)
 
     def test_cython_not_loaded_with_import_cpp_extension(self):

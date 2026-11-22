@@ -2760,7 +2760,7 @@ def _jit_compile(name,
                         hipified_sources.add(hipified_s_abs)
                     sources = list(hipified_sources)
 
-                # PPU conversion is independent of HIP; it must be reachable in SAIL-only builds.
+                # Zhenwu PPU conversion is independent of HIP; it must be reachable in SAIL-only builds.
                 if IS_PPU_EXTENSION and (with_cuda or with_cudnn):
                     from torch.sailify.sailify_python import sailify_extra_files_recursive
                     _jit_include_paths = (extra_include_paths if extra_include_paths is not None else [])
