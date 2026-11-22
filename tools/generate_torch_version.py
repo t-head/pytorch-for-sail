@@ -147,7 +147,7 @@ if __name__ == "__main__":
     if args.ppu_version is not None and args.sail_version is not None:
         parser.error(
             "--ppu-version and --sail-version are mutually exclusive: "
-            "PPU marks CUDA-compatible builds, while SAIL marks native builds."
+            "Zhenwu PPU marks CUDA-compatible builds, while SAIL marks native builds."
         )
 
     pytorch_root = Path(__file__).parent.parent

@@ -544,7 +544,7 @@ if(CUDAToolkit_VERSION_MAJOR)
   set(CUDA_VERSION "${CUDAToolkit_VERSION_MAJOR}.${CUDAToolkit_VERSION_MINOR}")
 endif()
 
-# torch.version.ppu identifies PPU CUDA-compatible builds only; native
+# torch.version.ppu identifies Zhenwu PPU CUDA-compatible builds only; native
 # SAIL builds use torch.version.sail even though USE_PPU is also enabled.
 # torch.version.cuda records the separate CUDA compatibility version.
 set(PPU_VERSION "")

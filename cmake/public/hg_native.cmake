@@ -276,7 +276,7 @@ foreach(_dir IN LISTS _PPU_COMPAT_DIRS)
 endforeach()
 if(_PPU_COMPAT_ROOT)
   include_directories(SYSTEM "${_PPU_COMPAT_ROOT}")
-  message(STATUS "PPU SAIL compat include root: ${_PPU_COMPAT_ROOT}")
+  message(STATUS "Zhenwu PPU SAIL compat include root: ${_PPU_COMPAT_ROOT}")
 else()
   message(WARNING "PPU SAIL compat wrapper not found. Looked for "
     "compatible_wrapper.h / cuda_compat_wrapper.h under: ${_PPU_COMPAT_DIRS}")
