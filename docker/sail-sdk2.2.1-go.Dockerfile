@@ -1,20 +1,18 @@
-# PyTorch-for-SAIL 2.10 runtime environment on T-Head SAIL SDK v2.2 (hggcrt3).
+# PyTorch-for-SAIL 2.10 runtime environment on T-Head SAIL SDK v2.2.1 (hggcrt3).
 
 ARG BASE_IMAGE=download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
 FROM ${BASE_IMAGE}
 
 USER root
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
 ARG ALIYUN_PIP_INDEX=https://mirrors.aliyun.com/pypi/simple/
 ARG SAIL_PIP_INDEX=https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
+
 ARG SAIL_PACKAGES="\
     triton==3.6.0+v0.3.0.sail2.2.0 \
-    # torch commit id: 3ca36da996a9ec9652816bb711df6f17a95a789a,sail2.2.1
-    torch==2.10.0+v0.2.0.sail2.2.0"
+    torch==2.10.0+v0.3.0.sail2.2.1"
 
-
-ARG PCCL_VERSION=2.2.2
+ARG PCCL_VERSION=2.2.3
 ARG PCCL_HGGCRT=hggcrt3
 ARG PCCL_OS=ubuntu2404
 ARG PCCL_TARBALL=pccl_${PCCL_HGGCRT}_${PCCL_OS}-v${PCCL_VERSION}.tar.gz
