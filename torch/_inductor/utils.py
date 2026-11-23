@@ -4435,7 +4435,7 @@ def maybe_aoti_standalone_config(config_patches: dict[str, Any]) -> dict[str, An
         patch_config(
             config_patches,
             "aot_inductor.emit_multi_arch_kernel",
-            not torch.version.hip and not torch.version.sail,
+            not torch.version.hip and not (torch.version.ppu or torch.version.sail),
         )
         patch_config(
             config_patches, "aot_inductor.model_name_for_generated_files", "aoti_model"
