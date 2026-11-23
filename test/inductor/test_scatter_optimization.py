@@ -702,7 +702,7 @@ class TestPartitionedScatterOpt(TestCase):
         torch.manual_seed(42)
         N, D, n = 1_000_000, 100, 501
         MIN_SPEEDUP = 1.5
-        if torch.version.ppu is not None or torch.version.sail is not None:
+        if getattr(torch.version, "ppu", None) is not None or getattr(torch.version, "sail", None) is not None:
             MIN_SPEEDUP = {(8, 0): 2.8, (8, 9): 1.1}.get(
                 torch.cuda.get_device_capability(), MIN_SPEEDUP
             )
