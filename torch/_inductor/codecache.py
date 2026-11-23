@@ -2575,7 +2575,7 @@ class CudaKernelParamCache:
         ):
             # ROCm and SAIL single-arch binaries do not require assembly.
             if (
-                bin_type != "cubin" or not (torch.version.ppu or torch.version.sail)
+                bin_type != "cubin" or not (getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None))
             ) and (torch.version.hip is None or (asm and asm_type)):
                 if not asm:
                     raise AssertionError("Missing kernel assembly code")
