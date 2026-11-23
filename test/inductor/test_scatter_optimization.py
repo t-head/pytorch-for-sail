@@ -702,6 +702,10 @@ class TestPartitionedScatterOpt(TestCase):
         torch.manual_seed(42)
         N, D, n = 1_000_000, 100, 501
         MIN_SPEEDUP = 1.5
+        if torch.version.ppu is not None or torch.version.sail is not None:
+            MIN_SPEEDUP = {(8, 0): 2.8, (8, 9): 1.1}.get(
+                torch.cuda.get_device_capability(), MIN_SPEEDUP
+            )
 
         def scatter_fn(out0, out1, out2, idx, vals):
             out0 = out0.index_put([idx], vals, accumulate=True)
