@@ -2548,7 +2548,7 @@ class CudaKernelParamCache:
         basename, _ = get_name_and_dir_from_output_file_path(bin_path)
 
         if config.aot_inductor.emit_multi_arch_kernel:
-            if bin_type == "cubin" and (torch.version.ppu or torch.version.sail):
+            if bin_type == "cubin" and (getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None)):
                 raise RuntimeError("emit_multi_arch_kernel=True is not supported on PPU")
             # Distinct from the single-arch .hsaco the JIT pass reloads, so
             # the multi-arch bundle doesn't clobber it.
