@@ -372,7 +372,7 @@ class AOTInductorTestsTemplate:
     def test_simple_multi_arch(self, embed_kernel_binary):
         if self.device != GPU_TYPE or self.device == "mps":
             raise unittest.SkipTest("requires GPU_TYPE")
-        if self.device == "cuda" and torch.version.sail is not None:
+        if self.device == "cuda" and (getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None)):
             raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
@@ -9331,7 +9331,7 @@ class TestAOTInductorConfig(TestCase):
         self.assertEqual(result["aot_inductor.embed_kernel_binary"], True)
         self.assertEqual(
             result["aot_inductor.emit_multi_arch_kernel"],
-            not torch.version.hip and not torch.version.sail,
+            not torch.version.hip and not (torch.version.ppu or torch.version.sail),
         )
         self.assertEqual(
             result["aot_inductor.model_name_for_generated_files"], "aoti_model"
@@ -9346,7 +9346,7 @@ class TestAOTInductorConfig(TestCase):
             "aot_inductor.dynamic_linkage": False,
             "aot_inductor.link_libtorch": False,
             "aot_inductor.emit_multi_arch_kernel": (
-                not torch.version.hip and not torch.version.sail
+                not torch.version.hip and not (torch.version.ppu or torch.version.sail)
             ),
             "aot_inductor.model_name_for_generated_files": "aoti_model",
         }
