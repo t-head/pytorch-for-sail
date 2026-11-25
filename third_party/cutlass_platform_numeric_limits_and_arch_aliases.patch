@@ -99,7 +99,7 @@ diff --git a/include/cutlass/half.h b/include/cutlass/half.h
 diff --git a/include/cutlass/arch/arch.h b/include/cutlass/arch/arch.h
 --- a/include/cutlass/arch/arch.h
 +++ b/include/cutlass/arch/arch.h
-@@ -70,7 +70,19 @@
+@@ -70,7 +70,18 @@
  struct PPU0015 {
    static int const kMinComputeCapability = 89;
  };
@@ -114,11 +114,10 @@ diff --git a/include/cutlass/arch/arch.h b/include/cutlass/arch/arch.h
 +using Sm80 = PPU0010;
 +using Sm86 = PPU0010;
 +using Sm89 = PPU0015;
-+using Sm90 = PPU0015;
  
  CUTLASS_DEVICE
  void device_breakpoint() {
-   __brkpt();
+ #if defined(__HGGC_ARCH__)
 diff --git a/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp b/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
 --- a/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
 +++ b/include/cutlass/epilogue/threadblock/fusion/visitor_2x.hpp
