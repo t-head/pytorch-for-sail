@@ -75,7 +75,7 @@ concurrency:
 
 jobs:
   build:
-    uses: flytiger-eco/shared-workflows/.github/workflows/nightly-build.yml@main
+    uses: t-head/ci-infra/.github/workflows/nightly-build.yml@main
     secrets:
       template_token: ${{ secrets.TEMPLATE_TOKEN }}
       release_username: ${{ secrets.RELEASE_USERNAME }}
@@ -84,7 +84,7 @@ jobs:
       # Scheduled and push runs have no inputs; use the same defaults as manual runs.
       package_name: ${{ inputs.package_name || 'torch' }}
       framework: ${{ inputs.framework || '' }}
-      template_repository: flytiger-eco/shared-workflows
+      template_repository: t-head/ci-infra
       template_ref: main
       runs_on: ${{ inputs.runs_on || 'x86-ubuntu2404-64-256' }}
       python_versions: ${{ inputs.python_versions || '["312"]' }}
