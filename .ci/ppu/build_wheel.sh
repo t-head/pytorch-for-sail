@@ -12,7 +12,7 @@ source "$(dirname "$0")/ccache_env.sh"
 unset TORCH_CUDA_ARCH_LIST
 
 cd "$REPO_DIR"
-pip install -r requirements.txt
+pip install cmake==3.31.10
 pip install numpy==2.1.0
 
 TORCH_VERSION=$(sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/' version.txt)
