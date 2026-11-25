@@ -33,7 +33,7 @@ export USE_PCCL=1
 export USE_FLASH_ATTENTION=1
 export USE_MEM_EFF_ATTENTION=1
 export BUILD_TEST=1
-export MAX_JOBS=128
+export MAX_JOBS=4
 
 # Release version. Without these, the wheel gets a development version tag.
 export PYTORCH_VERSION=2.14.1
