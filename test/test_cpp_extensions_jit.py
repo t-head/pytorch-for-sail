@@ -78,8 +78,10 @@ class TestCppExtensionImport(common.TestCase):
             expected = [*expected_cpu, sdk_include]
             if layout in ("source", "both"):
                 expected.append(root)
+                expected.append(os.path.join(root, ".ppu_compat"))
             if layout in ("wheel", "both"):
                 expected.append(lib_include)
+                expected.append(os.path.join(lib_include, ".ppu_compat"))
             self.assertEqual(paths, expected)
             # Zhenwu PPU compatibility paths must not leak into CPU-only extension builds.
             self.assertEqual(cpu_paths, expected_cpu)
