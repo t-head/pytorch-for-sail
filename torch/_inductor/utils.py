@@ -1806,7 +1806,7 @@ def is_big_gpu(index_or_device: int | torch.device = 0) -> bool:
     if (
         getattr(torch.version, "ppu", None)
         or getattr(torch.version, "sail", None) is not None
-    ):
+    ) and torch.cuda.is_available():
         return True
 
     min_sms = 16 if device.type == "xpu" else 68  # 3080
