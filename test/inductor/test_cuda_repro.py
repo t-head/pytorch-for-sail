@@ -3298,6 +3298,11 @@ def triton_poi_fused_add_reflection_pad2d_0(in_ptr0, in_ptr1, out_ptr0, xnumel, 
 
     @skipIfXpu(msg="Decimal object comparison failed - torch-xpu-ops: 2810")
     @skipIfRocm(msg="ROCm preserves subnormals by default")
+    @unittest.skipIf(
+        getattr(torch.version, "ppu", None) is not None
+        or getattr(torch.version, "sail", None) is not None,
+        "SAIL exp2 preserves subnormals by design",
+    )
     @config.patch({"eager_numerics.disable_ftz": False})
     def test_not_disabling_ftz_yields_zero(self):
         from decimal import Decimal
