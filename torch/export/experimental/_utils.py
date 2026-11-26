@@ -31,6 +31,9 @@ def _get_main_cpp_file(
 
     ib = IndentedBuffer()
 
+    if device_type == "cuda" and torch.version.sail is not None:
+        ib.writeline("#include <.ppu_compat/compatible_wrapper.h>")
+
     ib.writelines(
         [
             "#include <dlfcn.h>",
@@ -50,7 +53,7 @@ def _get_main_cpp_file(
                 ]
             )
 
-        else:
+        elif torch.version.sail is None:
             ib.writelines(
                 [
                     "#include <cuda.h>",
@@ -189,6 +192,7 @@ def _get_main_cpp_file(
 
 
 def _get_make_file(package_name: str, model_names: list[str], device_type: str) -> str:
+    is_sail = device_type == "cuda" and torch.version.sail is not None
     ib = IndentedBuffer()
 
     ib.writelines(
@@ -203,13 +207,13 @@ def _get_make_file(package_name: str, model_names: list[str], device_type: str) 
 
     from torch._inductor.config import test_configs
 
-    if test_configs.use_libtorch:
+    if test_configs.use_libtorch or is_sail:
         ib.writeline("find_package(Torch REQUIRED)")
 
     if device_type == "cuda":
         if torch.version.hip:
             ib.writeline("find_package(hip REQUIRED)")
-        else:
+        elif not is_sail:
             ib.writeline("find_package(CUDA REQUIRED)")
 
     ib.newline()
@@ -231,6 +235,8 @@ def _get_make_file(package_name: str, model_names: list[str], device_type: str) 
     if device_type == "cuda":
         if torch.version.hip:
             ib.writeline("target_link_libraries(main PRIVATE hip::host)")
+        elif is_sail:
+            ib.writeline("target_link_libraries(main PRIVATE HGGC::hggc HGGC::hggcrt)")
         else:
             ib.writeline("target_link_libraries(main PRIVATE cuda ${CUDA_LIBRARIES})")
     elif device_type == "xpu":
