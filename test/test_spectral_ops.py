@@ -12,7 +12,7 @@ import inspect
 
 from torch.testing._internal.common_utils import \
     (TestCase, run_tests, TEST_NUMPY, TEST_LIBROSA, requires_mkl, first_sample, TEST_WITH_ROCM,
-     make_tensor, skipIfTorchDynamo)
+     make_tensor, skipIfTorchDynamo, parametrize)
 from torch.testing._internal.common_device_type import \
     (instantiate_device_type_tests, ops, dtypes, onlyNativeDeviceTypes,
      skipCPUIfNoFFT, deviceCountAtLeast, onlyCUDA, onlyOn, OpDTypes, toleranceOverride, tol,
@@ -127,6 +127,49 @@ def skip_helper_for_fft(device, dtype):
 # Tests of functions related to Fourier analysis in the torch.fft namespace
 class TestFFT(TestCase):
     exact_dtype = True
+
+    @onlyCUDA
+    @unittest.skipUnless(
+        getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None),
+        "PPU-only FFT layout regression",
+    )
+    @dtypes(torch.float, torch.cfloat)
+    @parametrize("signal_shape", [(1, 2), (1, 3), (2, 1, 3), (1, 2, 3), (2, 3, 1)])
+    @parametrize("batch", [1, 3])
+    @parametrize("singleton_stride", [None, 0, 7])
+    def test_ppu_fft_singleton_layout(self, device, dtype, signal_shape, batch, singleton_stride):
+        x = torch.randn((batch, *signal_shape), device=device, dtype=dtype)
+        if singleton_stride is not None:
+            strides = tuple(singleton_stride if size == 1 else stride
+                            for size, stride in zip(x.shape, x.stride()))
+            x = x.as_strided(x.shape, strides)
+        dims = tuple(range(1, x.ndim))
+        reference = x.cpu()
+        self.assertEqual(torch.fft.fftn(x, dim=dims), torch.fft.fftn(reference, dim=dims))
+        self.assertEqual(torch.fft.ifftn(x, dim=dims), torch.fft.ifftn(reference, dim=dims))
+        if not dtype.is_complex:
+            spectrum = torch.fft.rfftn(x, dim=dims)
+            self.assertEqual(spectrum, torch.fft.rfftn(reference, dim=dims))
+            self.assertEqual(torch.fft.irfftn(spectrum, s=signal_shape, dim=dims), reference)
+
+    @onlyCUDA
+    @unittest.skipUnless(
+        getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None),
+        "PPU-only FFT layout regression",
+    )
+    @parametrize("shape", [(1, 2), (1, 3)])
+    def test_ppu_irfft2_vjpvjp(self, device, shape):
+        def vjp_full(x, cotangent):
+            return torch.func.vjp(torch.fft.irfft2, x)[1](cotangent)
+
+        x = torch.randn(shape, dtype=torch.float32)
+        cotangent = torch.randn((shape[0], 2 * (shape[1] - 1)), dtype=torch.float32)
+        outer_cotangent = torch.randn_like(x)
+        expected_first, expected_vjp = torch.func.vjp(vjp_full, x, cotangent)
+        actual_first, actual_vjp = torch.func.vjp(vjp_full, x.to(device), cotangent.to(device))
+        self.assertEqual(torch.fft.irfft2(x.to(device)), torch.fft.irfft2(x))
+        self.assertEqual(actual_first, expected_first)
+        self.assertEqual(actual_vjp((outer_cotangent.to(device),)), expected_vjp((outer_cotangent,)))
 
     @onlyNativeDeviceTypes
     @ops([op for op in spectral_funcs if op.ndimensional == SpectralFuncType.OneD],
