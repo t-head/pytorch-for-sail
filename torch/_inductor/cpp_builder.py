@@ -2784,14 +2784,17 @@ class CppBuilder:
                 ppu_arch = _ppu_arch_from_cuda_arch(current_arch)
                 ppu_compat_cmake = ""
                 if os.path.isdir(ppu_compat_dir):
-                    ppu_compat_cmake = f'\n                    target_include_directories({self._target_name} PRIVATE "{ppu_compat_dir}")'
+                    ppu_compat_cmake = f'\n                    target_include_directories({self._target_name} PRIVATE "{os.path.dirname(ppu_compat_dir)}" "{ppu_compat_dir}")'
                     ppu_compat_cmake += f'\n                    target_compile_options({self._target_name} PRIVATE -include "{ppu_compat_dir}/compatible_wrapper.h")'
                 contents += textwrap.dedent(
                     f"""
                     # PPU platform: use hgcc and PPU SDK instead of CUDAToolkit
-                    set(CMAKE_CUDA_COMPILER "{hgcc_path}")
-                    enable_language(CUDA)
-                    set(CMAKE_CUDA_STANDARD 17)
+                    set(CMAKE_HG_COMPILER "{hgcc_path}")
+                    enable_language(HG)
+                    set(CMAKE_HG_STANDARD 20)
+                    if(NOT TARGET HGGC::hggcrt)
+                        find_package(HGGCToolkit REQUIRED)
+                    endif()
                     target_include_directories({self._target_name} PRIVATE "{ppu_include}"){ppu_compat_cmake}
                     target_compile_definitions({self._target_name} PRIVATE USE_CUDA
                         __HGGC_NO_HALF_OPERATORS__ __HGGC_NO_HALF_CONVERSIONS__
@@ -2801,7 +2804,7 @@ class CppBuilder:
                     # embedded kernels. Preserve the SDK runtime DT_NEEDED entry
                     # even when the host linker cannot see those references.
                     target_link_options({self._target_name} PRIVATE -Wl,--no-as-needed)
-                    target_link_libraries({self._target_name} PRIVATE hggc hggcrt1)
+                    target_link_libraries({self._target_name} PRIVATE HGGC::hggc HGGC::hggcrt)
 
                     find_program(OBJCOPY_EXECUTABLE objcopy)
                     if(NOT OBJCOPY_EXECUTABLE)
@@ -2812,46 +2815,46 @@ class CppBuilder:
                     set(KERNEL_OBJECT_FILES "")
                     # Function to embed a single kernel
                     function(embed_gpu_kernel KERNEL_NAME PTX_FILE)
-                        set(FATBIN_BASENAME ${{{{KERNEL_NAME}}}}.fatbin)
-                        set(FATBIN_FILE ${{{{CMAKE_CURRENT_BINARY_DIR}}}}/${{{{FATBIN_BASENAME}}}})
-                        set(OBJECT_BASENAME ${{{{KERNEL_NAME}}}}.fatbin.o)
-                        set(OBJECT_FILE ${{{{CMAKE_CURRENT_BINARY_DIR}}}}/${{{{OBJECT_BASENAME}}}})
+                        set(FATBIN_BASENAME ${{KERNEL_NAME}}.fatbin)
+                        set(FATBIN_FILE ${{CMAKE_CURRENT_BINARY_DIR}}/${{FATBIN_BASENAME}})
+                        set(OBJECT_BASENAME ${{KERNEL_NAME}}.fatbin.o)
+                        set(OBJECT_FILE ${{CMAKE_CURRENT_BINARY_DIR}}/${{OBJECT_BASENAME}})
 
                         # --- Define UNIQUE C symbol names ---
-                        set(SYMBOL_START __${{{{KERNEL_NAME}}}}_start)
-                        set(SYMBOL_END __${{{{KERNEL_NAME}}}}_end)
-                        set(SYMBOL_SIZE __${{{{KERNEL_NAME}}}}_size)
-                        string(REGEX REPLACE "[^a-zA-Z0-9]" "_" MANGLED_BASENAME ${{{{FATBIN_FILE}}}})
-                        set(OBJCOPY_START_SYM _binary_${{{{MANGLED_BASENAME}}}}_start)
-                        set(OBJCOPY_END_SYM _binary_${{{{MANGLED_BASENAME}}}}_end)
-                        set(OBJCOPY_SIZE_SYM _binary_${{{{MANGLED_BASENAME}}}}_size)
+                        set(SYMBOL_START __${{KERNEL_NAME}}_start)
+                        set(SYMBOL_END __${{KERNEL_NAME}}_end)
+                        set(SYMBOL_SIZE __${{KERNEL_NAME}}_size)
+                        string(REGEX REPLACE "[^a-zA-Z0-9]" "_" MANGLED_BASENAME ${{FATBIN_FILE}})
+                        set(OBJCOPY_START_SYM _binary_${{MANGLED_BASENAME}}_start)
+                        set(OBJCOPY_END_SYM _binary_${{MANGLED_BASENAME}}_end)
+                        set(OBJCOPY_SIZE_SYM _binary_${{MANGLED_BASENAME}}_size)
 
                         # --- PTX to FATBIN Command & Target (using hgcc) ---
                         add_custom_command(
-                            OUTPUT ${{{{FATBIN_FILE}}}}
-                            COMMAND "{hgcc_path}" --fatbin ${{{{PTX_FILE}}}} -o ${{{{FATBIN_FILE}}}}
+                            OUTPUT ${{FATBIN_FILE}}
+                            COMMAND "{hgcc_path}" --fatbin ${{PTX_FILE}} -o ${{FATBIN_FILE}}
                                     --gpu-architecture={ppu_arch}
-                            DEPENDS ${{{{PTX_FILE}}}}
+                            DEPENDS ${{PTX_FILE}}
                         )
 
                         # --- FATBIN to Object File (.o) Command ---
                         add_custom_command(
-                            OUTPUT ${{{{OBJECT_FILE}}}}
-                            COMMAND ${{{{CMAKE_LINKER}}}} -r -b binary -z noexecstack -o ${{{{OBJECT_FILE}}}} ${{{{FATBIN_FILE}}}}
-                            COMMAND ${{{{OBJCOPY_EXECUTABLE}}}} --rename-section .data=.rodata,alloc,load,readonly,data,contents
-                                    ${{{{OBJECT_FILE}}}}
-                            COMMAND ${{{{OBJCOPY_EXECUTABLE}}}}
-                                    --redefine-sym ${{{{OBJCOPY_START_SYM}}}}=${{{{SYMBOL_START}}}}
-                                    --redefine-sym ${{{{OBJCOPY_END_SYM}}}}=${{{{SYMBOL_END}}}}
-                                    --redefine-sym ${{{{OBJCOPY_SIZE_SYM}}}}=${{{{SYMBOL_SIZE}}}}
-                                    ${{{{OBJECT_FILE}}}}
-                            DEPENDS ${{{{FATBIN_FILE}}}}
+                            OUTPUT ${{OBJECT_FILE}}
+                            COMMAND ${{CMAKE_LINKER}} -r -b binary -z noexecstack -o ${{OBJECT_FILE}} ${{FATBIN_FILE}}
+                            COMMAND ${{OBJCOPY_EXECUTABLE}} --rename-section .data=.rodata,alloc,load,readonly,data,contents
+                                    ${{OBJECT_FILE}}
+                            COMMAND ${{OBJCOPY_EXECUTABLE}}
+                                    --redefine-sym ${{OBJCOPY_START_SYM}}=${{SYMBOL_START}}
+                                    --redefine-sym ${{OBJCOPY_END_SYM}}=${{SYMBOL_END}}
+                                    --redefine-sym ${{OBJCOPY_SIZE_SYM}}=${{SYMBOL_SIZE}}
+                                    ${{OBJECT_FILE}}
+                            DEPENDS ${{FATBIN_FILE}}
                         )
-                        add_custom_target(build_kernel_object_${{{{KERNEL_NAME}}}} DEPENDS ${{{{OBJECT_FILE}}}})
+                        add_custom_target(build_kernel_object_${{KERNEL_NAME}} DEPENDS ${{OBJECT_FILE}})
 
                         # --- Add to a list for linking later ---
-                        set(KERNEL_TARGETS ${{{{KERNEL_TARGETS}}}} build_kernel_object_${{{{KERNEL_NAME}}}} PARENT_SCOPE)
-                        set(KERNEL_OBJECT_FILES ${{{{KERNEL_OBJECT_FILES}}}} ${{{{OBJECT_FILE}}}} PARENT_SCOPE)
+                        set(KERNEL_TARGETS ${{KERNEL_TARGETS}} build_kernel_object_${{KERNEL_NAME}} PARENT_SCOPE)
+                        set(KERNEL_OBJECT_FILES ${{KERNEL_OBJECT_FILES}} ${{OBJECT_FILE}} PARENT_SCOPE)
                     endfunction()
 
                 """

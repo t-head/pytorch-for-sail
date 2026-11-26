@@ -12,6 +12,7 @@ import unittest
 import zipfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 from parameterized import parameterized_class
 
@@ -33,7 +34,12 @@ from torch.testing._internal.common_cuda import (
     requires_triton_ptxas_compat,
     TRITON_PTXAS_VERSION,
 )
-from torch.testing._internal.common_utils import IS_FBCODE, TEST_CUDA
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    IS_FBCODE,
+    parametrize,
+    TEST_CUDA,
+)
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU
 
 
@@ -432,7 +438,9 @@ class TestAOTInductorPackage(TestCase):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest(f"Only meant to test {GPU_TYPE}")
         self.check_package_cpp_only()
-        if self.device == "cuda" and (getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None)):
+        if self.device == "cuda" and (
+            getattr(torch.version, "ppu", None) or getattr(torch.version, "sail", None)
+        ):
             raise unittest.SkipTest("Triton PPU backend has no PTX stage")
 
         class Model(torch.nn.Module):
@@ -1185,6 +1193,103 @@ class TestAOTInductorPackage(TestCase):
             "Failed to find a generated cpp file or so file for model 'forward' in the zip archive.",
         ):
             load_package(package_path, model_name="forward")
+
+
+@instantiate_parametrized_tests
+class TestAOTInductorPackageCodegen(TestCase):
+    @parametrize(
+        "device,sail,hip",
+        [
+            ("cpu", None, None),
+            ("cuda", None, None),
+            ("cuda", "test", None),
+            ("cpu", "test", None),
+            ("cuda", None, "test"),
+        ],
+    )
+    @parametrize("use_libtorch", [False, True])
+    def test_exporter_backend(self, device, sail, hip, use_libtorch):
+        from torch.export.experimental._utils import _get_main_cpp_file, _get_make_file
+
+        with (
+            mock.patch.multiple(torch.version, sail=sail, hip=hip),
+            torch._inductor.config.patch("test_configs.use_libtorch", use_libtorch),
+        ):
+            cmake = _get_make_file("package", ["model"], device)
+            main = _get_main_cpp_file("package", ["model"], {"model": 1}, device)
+
+        is_sail = device == "cuda" and sail is not None
+        self.assertEqual(
+            "find_package(Torch REQUIRED)" in cmake, use_libtorch or is_sail
+        )
+        if is_sail:
+            self.assertIn("HGGC::hggc HGGC::hggcrt", cmake)
+            self.assertNotIn("find_package(CUDA", cmake)
+            self.assertNotIn("PRIVATE cuda ", cmake)
+            self.assertTrue(
+                main.startswith("#include <.ppu_compat/compatible_wrapper.h>")
+            )
+            self.assertNotIn("#include <cuda", main)
+        elif device == "cuda" and hip is not None:
+            self.assertIn("find_package(hip REQUIRED)", cmake)
+            self.assertIn("hip::host", cmake)
+            self.assertIn("#include <hip/hip_runtime.h>", main)
+            self.assertNotIn("HGGC::", cmake)
+        elif device == "cuda":
+            self.assertIn("find_package(CUDA REQUIRED)", cmake)
+            self.assertIn("PRIVATE cuda ${CUDA_LIBRARIES}", cmake)
+            self.assertIn("#include <cuda.h>", main)
+            self.assertIn("#include <cuda_runtime_api.h>", main)
+            self.assertNotIn("HGGC::", cmake)
+        else:
+            self.assertNotIn("find_package(CUDA", cmake)
+            self.assertNotIn("HGGC::", cmake)
+            self.assertNotIn("#include <cuda", main)
+            self.assertNotIn("compatible_wrapper.h", main)
+
+    @parametrize("use_libtorch", [False, True])
+    def test_sail_model_cmake(self, use_libtorch):
+        from torch._inductor.cpp_builder import BuildOptionsBase, CppBuilder
+        from torch.utils import cpp_extension
+
+        with (
+            mock.patch.multiple(torch.version, sail="test", hip=None),
+            mock.patch.object(cpp_extension, "PPU_HOME", "/sdk"),
+            mock.patch(
+                "torch._inductor.codegen.cuda.compile_utils._nvcc_arch_as_compile_option",
+                return_value="sm_89",
+            ),
+            mock.patch(
+                "torch._inductor.codegen.cuda.compile_utils._ppu_arch_from_cuda_arch",
+                return_value="ppu_15",
+            ),
+            torch._inductor.config.patch(
+                {
+                    "test_configs.use_libtorch": use_libtorch,
+                    "aot_inductor.link_libtorch": use_libtorch,
+                    "aot_inductor.model_name_for_generated_files": "model",
+                }
+            ),
+            tempfile.TemporaryDirectory() as tmp_dir,
+        ):
+            builder = CppBuilder(
+                name="model",
+                sources=["model.cpp"],
+                BuildOption=BuildOptionsBase(compiler="c++"),
+                output_dir=tmp_dir,
+            )
+            cmake_path = Path(tmp_dir) / "CMakeLists.txt"
+            builder.save_compile_cmd_to_cmake(str(cmake_path), "cuda")
+            cmake = cmake_path.read_text()
+
+        self.assertIn("enable_language(HG)", cmake)
+        self.assertIn("set(CMAKE_HG_STANDARD 20)", cmake)
+        self.assertIn("HGGC::hggc HGGC::hggcrt", cmake)
+        self.assertNotIn("enable_language(CUDA)", cmake)
+        self.assertNotIn("CMAKE_CUDA_COMPILER", cmake)
+        self.assertNotIn("${{", cmake)
+        self.assertIn("${KERNEL_NAME}.fatbin", cmake)
+        self.assertIn("${CMAKE_CURRENT_BINARY_DIR}/${FATBIN_BASENAME}", cmake)
 
 
 if __name__ == "__main__":
