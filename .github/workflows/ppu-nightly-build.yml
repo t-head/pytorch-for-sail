@@ -108,7 +108,7 @@ jobs:
         export USE_DISTRIBUTED=1
         export BUILD_CAFFE2=0
         export BUILD_TEST=0
-        export MAX_JOBS=128
+        export MAX_JOBS=4
         export PYTORCH_VERSION=2.13.0
         export PYTORCH_BUILD_VERSION=2.13.0
         export PYTORCH_BUILD_NUMBER=0
