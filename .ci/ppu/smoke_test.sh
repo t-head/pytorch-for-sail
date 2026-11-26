@@ -13,7 +13,7 @@ echo "=== Environment self-check ==="
 echo "pr=${PR_NUMBER:-none} hostname=$(hostname) node=${NODE_NAME:-unknown}"
 
 bash .ci/ppu/install_test_deps.sh
-source .ci/ppu/cuda_only_filter.sh
+#source .ci/ppu/cuda_only_filter.sh
 echo "=== CUDA smoke cases (run_test.py --include exact filter, CUDA-related only) ==="
 
 K_SKIP_CASES="not test_benchmark_choice_fail_in_subproc \

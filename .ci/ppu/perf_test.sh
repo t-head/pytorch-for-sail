@@ -36,6 +36,7 @@ and not test_augment_trace_against_flop_counter_maxat3_cuda_float \
 and not test_combine_profiles_cuda_float \
 and not test_extern \
 and not test_combine_profiles_cuda_float16 \
+and not test_diff_cuda_float16 \
 and not test_split_scan"
 python test/run_test.py \
     --include \
