@@ -197,7 +197,7 @@ The `.sailify_done` marker in the converted tree prevents redundant conversion. 
 
 Prerequisites:
 
-- Docker installed, with network access to pull the base image `download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005`.
+- Docker installed, with network access to pull the base image `download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt2-ubuntu24.04-py312-20261123`.
 - A source checkout with all Git submodules initialized (`git submodule update --init --recursive`).
 - A scratch directory on a large disk (tens of GB free) to hold the out-of-place build tree and the wheel.
 - Building the wheel needs no PPU device; only running it does.

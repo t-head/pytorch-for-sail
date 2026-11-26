@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_SDK_URL="https://download.t-head.cn/artifactory/ptgai-generic-release/PPU_SDK/v2.2.0/ppu_hggcrt3_ubuntu2404-2.2.0-663c22.run"
+DEFAULT_SDK_URL="https://pkg.flytiger-eco.com/artifactory/generic-local/CUDA_SDK/v2.2.1/PPU_SDK_cuda-13.0.0-ubuntu2404-2.2.1-184ee6.tar.gz"
 SDK_URL="${SDK_URL:-$DEFAULT_SDK_URL}"
 SDK_INSTALL_DIR="${SDK_INSTALL_DIR:-/usr/local}"
 SDK_LICENSE_ANSWER="${SDK_LICENSE_ANSWER:-accept}"
