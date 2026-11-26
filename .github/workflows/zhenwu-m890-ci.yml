@@ -39,7 +39,7 @@ permissions:
   actions: read
 
 env:
-  IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+  IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt2-ubuntu24.04-py312-20261123
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
