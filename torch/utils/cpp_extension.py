@@ -1958,11 +1958,13 @@ def CUDAExtension(name, sources, *args, **kwargs):
             inject_compat_include=True,
         )
 
-        # Injected <.ppu_compat/...> includes need the build root, not the compat directory.
+        # Injected <.ppu_compat/...> includes need the build root; the compat
+        # directory itself serves bare compat includes (e.g. <mma.h>).
         # include_paths() supplies the installed wheel fallback below.
         jit_compat_dir = os.path.join(build_dir, '.ppu_compat')
         if os.path.isfile(os.path.join(jit_compat_dir, 'compatible_wrapper.h')):
             include_dirs.append(build_dir)
+            include_dirs.append(jit_compat_dir)
 
         ppuified_sources = set()
         for source in sources:
@@ -2101,16 +2103,20 @@ def include_paths(device_type: str = "cpu", torch_include_dirs=True) -> list[str
         paths.append(_join_rocm_home('include'))
     elif device_type == "cuda" and IS_PPU_EXTENSION:
         paths.append(_join_ppu_home('include'))
-        # Injected <.ppu_compat/...> includes resolve from its parent in either layout.
+        # Injected <.ppu_compat/...> includes resolve from its parent in either
+        # layout; bare compat includes (e.g. <mma.h>) resolve from the
+        # directory itself.
         _dev_root = os.path.dirname(_TORCH_PATH)
         if os.path.isfile(
             os.path.join(_dev_root, '.ppu_compat', 'compatible_wrapper.h')
         ):
             paths.append(_dev_root)
+            paths.append(os.path.join(_dev_root, '.ppu_compat'))
         # Add pre-packaged .ppu_compat for fallback
         compat_dir = os.path.join(lib_include, '.ppu_compat')
         if os.path.isdir(compat_dir):
             paths.append(lib_include)
+            paths.append(compat_dir)
     elif device_type == "cuda":
         cuda_home_include = _join_cuda_home('include')
         # if we have the Debian/Ubuntu packages for cuda, we get /usr as cuda home.
@@ -2783,6 +2789,7 @@ def _jit_compile(name,
                     jit_compat_dir = os.path.join(build_directory, '.ppu_compat')
                     if os.path.isfile(os.path.join(jit_compat_dir, 'compatible_wrapper.h')):
                         extra_include_paths.append(build_directory)
+                        extra_include_paths.append(jit_compat_dir)
                     # Convert nvcc-specific flags to hgcc equivalents
                     extra_cuda_cflags = _sailify_nvcc_flags(extra_cuda_cflags or [])
 
