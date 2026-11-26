@@ -3,9 +3,11 @@
 # flake8: noqa
 
 import itertools
+import os
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 import torch
 from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
@@ -19,8 +21,10 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
     IS_FBCODE,
     IS_WINDOWS,
+    parametrize,
     run_tests,
     skipIfRocm,
     skipIfRocmVersionAtLeast,
@@ -146,6 +150,43 @@ selected_ops = {
 selected_op_db = [op for op in op_db if op.name in selected_ops]
 
 
+def _fake_cuda_subprocess_env():
+    if getattr(torch.version, "sail", None) is None:
+        return {"CUDA_VISIBLE_DEVICES": ""}
+    # Preserve SAIL SDK discovery and runtime paths while hiding real devices.
+    env = os.environ.copy()
+    env.update(CUDA_VISIBLE_DEVICES="", HGGC_VISIBLE_DEVICES="")
+    return env
+
+
+@instantiate_parametrized_tests
+class TestFakeCudaSubprocessEnv(TestCase):
+    @parametrize("sail", [None, "test-sail"])
+    @parametrize("visible_devices", ["", "0", "0,1"])
+    def test_subprocess_env(self, sail, visible_devices):
+        parent_env = {
+            "PPU_SDK": "/sdk",
+            "PPU_HOME": "/sdk",
+            "PATH": "/sdk/bin",
+            "LD_LIBRARY_PATH": "/sdk/lib",
+            "CUDA_VISIBLE_DEVICES": visible_devices,
+            "HGGC_VISIBLE_DEVICES": visible_devices,
+        }
+        with (
+            patch.dict(os.environ, parent_env, clear=True),
+            patch.object(torch.version, "sail", sail, create=True),
+        ):
+            env = _fake_cuda_subprocess_env()
+            if sail is None:
+                self.assertEqual(env, {"CUDA_VISIBLE_DEVICES": ""})
+            else:
+                expected = parent_env.copy()
+                expected.update(CUDA_VISIBLE_DEVICES="", HGGC_VISIBLE_DEVICES="")
+                self.assertEqual(env, expected)
+            env["PATH"] = "/child/bin"
+            self.assertEqual(dict(os.environ), parent_env)
+
+
 @skipIfRocmVersionAtLeast([7, 14])
 class TestExportOnFakeCuda(TestCase):
     # In CI, this test runs on a CUDA machine with cuda build
@@ -214,7 +255,7 @@ for op in ops:
             (
                 subprocess.check_output(
                     [sys.executable, "-c", test_script],
-                    env={"CUDA_VISIBLE_DEVICES": ""},
+                    env=_fake_cuda_subprocess_env(),
                 )
             )
             .decode("ascii")
@@ -281,7 +322,7 @@ cuda_calls_behavior_unchanged()
             (
                 subprocess.check_output(
                     [sys.executable, "-c", test_script],
-                    env={"CUDA_VISIBLE_DEVICES": ""},
+                    env=_fake_cuda_subprocess_env(),
                 )
             )
             .decode("ascii")
