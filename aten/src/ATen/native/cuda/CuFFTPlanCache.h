@@ -196,6 +196,24 @@ inline CuFFTDataLayout as_cufft_embed(IntArrayRef strides, IntArrayRef sizes, bo
     layout = cufft_simple_embed(sizes, onesided);
     layout.must_clone = true;
   } else {
+#if defined(USE_PPU)
+    // ACFFT requires valid embedding extents even for singleton dimensions.
+    // Normalize only physically contiguous signals and batches; NULL embeds
+    // ignore the advanced stride and distance parameters.
+    cufft_size_type expected_stride = 1;
+    bool signal_is_contiguous = true;
+    for (auto i = signal_ndim; i > 0; --i) {
+      const auto dim_size = i == signal_ndim ? last_dim_size : sizes[i];
+      if (dim_size != 1 && strides[i] != expected_stride) {
+        signal_is_contiguous = false;
+        break;
+      }
+      expected_stride *= dim_size;
+    }
+    if (signal_is_contiguous && layout.dist == signal_numel) {
+      return cufft_simple_embed(sizes, onesided);
+    }
+#endif
     layout.embed[0] = sizes[1];
     layout.stride = strides[signal_ndim];
     // Determine if layout represents a simple embedding (contiguous data)
