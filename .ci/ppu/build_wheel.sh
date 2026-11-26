@@ -12,7 +12,7 @@ source "$PPU_SDK/envsetup.sh"
 source "$(dirname "$0")/sdk_env.sh"
 source "$(dirname "$0")/install_pccl.sh"
 source "$(dirname "$0")/ccache_env.sh"
-
+pip install -r requirements.txt
 pip install cmake==3.31.10
 pip install numpy==2.1.0
 source "$PCCL_HOME/envsetup.sh" release
