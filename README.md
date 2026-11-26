@@ -18,6 +18,9 @@ This project is a derivative work of PyTorch. The original PyTorch copyright and
 - [Zhenwu PPU Support and Optimizations](#zhenwu-ppu-support-and-optimizations)
 - [Installation](#installation)
   - [From Source](#from-source)
+    - [Prepare the environment](#prepare-the-environment)
+    - [Build a wheel without installing](#build-a-wheel-without-installing)
+    - [Install a built wheel manually](#install-a-built-wheel-manually)
 - [Getting Started](#getting-started)
 - [Resources](#resources)
 - [Security](#security)
@@ -35,9 +38,9 @@ PyTorch-for-SAIL connects PyTorch to Zhenwu PPU with three pieces of the T-HEAD 
 
 | Component | What it does |
 | --------- | ------------ |
-| SAIL SDK | The HGCC compiler toolchain and the device runtime. Kernels compile directly against the Zhenwu PPU instruction set, so the build has no CUDA runtime dependency. |
-| sailify | A source conversion tool that rewires CUDA-facing entry points to the SAIL native interfaces. It keeps the upstream code structure intact, which keeps the branch easy to follow across upstream releases. |
-| Adapted libraries | Zhenwu PPU-adapted forks of cutlass (actlize), flash-attention (flash-attention-for-sail), xformers (xformers-for-sail), and gloo (gloo-for-sail), integrated as submodules and wired into the build. The SDPA attention backends build on actlize and flash-attention-for-sail. |
+| SAIL SDK | HGCC compiler and runtime for Zhenwu PPU; no CUDA runtime is required. |
+| sailify | Converts CUDA-facing source code to SAIL native interfaces. |
+| Adapted libraries | actlize, flash-attention-for-sail, xformers-for-sail, and gloo-for-sail provide PPU kernels and communication support. |
 
 Distributed training uses PCCL, the collective communication library for the SAIL stack.
 
@@ -54,145 +57,176 @@ The current version runs on the SAIL SDK v2.2.x with the matching PCCL release.
 | Distributed training | Over PCCL |
 | Hardware | Zhenwu M890 / 810 / 810E |
 
-**SDPA on Zhenwu PPU.** The Flash-Attention and Memory-Efficient Attention backends run through the adapted cutlass and flash-attention libraries. actlize maps matrix multiply-accumulate onto Zhenwu PPU Tensor Cell instructions.
-
-**Runtime routing.** Inductor and the Python runtime are routed to the SAIL device (`torch.version.sail`, `torch._smi`), and the Inductor CUDA codegen compiles with the SAIL toolchain.
-
 ---
 
 ## Installation
 
 ### From Source
 
-Two Docker-based workflows are provided. Method 1 is the one verified during development. A ready-to-run script, [`docker/sail/build-sail.sh`](docker/sail/build-sail.sh), wraps the Method 1 build steps: `./docker/sail/build-sail.sh` builds in place, and `./docker/sail/build-sail.sh <output-dir>` converts out of place.
+Prepare the environment, build a wheel into `dist/`, then install it manually when needed. The build commands do not install Torch or rewrite the original checkout.
+
+Use the commands below for wheel-only builds. [`docker/sail/build-sail.sh`](docker/sail/build-sail.sh) still runs `pip install .` and is not a wheel-only helper.
 
 > Download the T-Head SAIL SDK from the [T-Head Developer Center](https://developer.t-head.cn/download/index.html).
 > For compatibility, this documentation retains references to `PPU_SDK`. `PPU_SDK` refers to
 > the T-Head SAIL SDK; environment variable names and paths do not need to be changed.
 
-#### Method 1: `Dockerfile.sail-sdk2.2`
+#### Prepare the environment
 
-[`Dockerfile.sail-sdk2.2`](docker/sail/Dockerfile.sail-sdk2.2) builds a compact environment image for the T-Head SAIL SDK v2.2.1 (hggcrt3). It upgrades the SDK bundled in the base image from v2.2.0 to v2.2.1, upgrades PCCL to v2.2.2, and pre-installs the Python packages needed to build PyTorch 2.14.1 (`scikit-build-core`, `spin`, and a matching `setuptools`). The source code is mounted from the host at build time instead of being copied into the image, keeping the image small. The image check, the two-stage build, and the hardware checks below are the ones verified during development.
+The example uses Linux x86_64, Python 3.12, SAIL SDK v2.2.1, and PCCL v2.2.2 (hggcrt3, ubuntu2404). Start with the branch you want to build:
 
-**Step 1 — build the environment image.** The build context can be an empty directory; the Dockerfile copies nothing. `SDK_RUN_URL` and `PCCL_URL` default to placeholders and must be supplied. Get the SDK v2.2.1 (hggcrt3, ubuntu2404) `.run` installer and the matching PCCL v2.2.2 package from the [T-Head Developer Center download page](https://developer.t-head.cn/download/index.html):
+```bash
+git clone --recursive -b v2.14.1 https://github.com/t-head/pytorch-for-sail.git
+cd pytorch-for-sail
+# For an existing checkout, initialize any missing submodules:
+# git submodule update --init --recursive
+```
+
+Use a compatible SDK image from the download portal, or build one with the optional Dockerfile instructions below. Replace quoted placeholders before running commands.
+
+<details>
+<summary>Optional: build an SDK environment image</summary>
+
+[`Dockerfile.sail-sdk2.2`](docker/sail/Dockerfile.sail-sdk2.2) installs SDK v2.2.1, PCCL v2.2.2, and Python build dependencies. Supply a compatible SDK v2.2.0/hggcrt3 base image and official package URLs:
 
 ```bash
 docker build -f docker/sail/Dockerfile.sail-sdk2.2 \
   -t pytorch-sail-buildenv:2.14.1-sdk2.2.1 \
-  --build-arg SDK_RUN_URL=<sdk-v2.2.1-run-url> \
-  --build-arg PCCL_URL=<pccl-v2.2.2-package-url> \
-  <empty-context-directory>
+  --build-arg BASE_IMAGE="<compatible-sdk-v2.2.0-hggcrt3-image>" \
+  --build-arg SDK_RUN_URL="<sdk-v2.2.1-run-url>" \
+  --build-arg PCCL_URL="<pccl-v2.2.2-package-url>" \
+  "<empty-context-directory>"
 ```
 
-The image checks itself at the end of the build (SDK v2.2.1, PCCL v2.2.2, and the Python packages), so a broken environment fails here instead of in the middle of a long compile. `PIP_INDEX_URL` defaults to the TUNA mirror; if the build host cannot reach it, pass `--build-arg PIP_INDEX_URL=<index>` to use another mirror. If the container cannot download the SDK or PCCL package (a `403` error, for example), add `--add-host <download-host>:<public-ip>` to force the public address — see the Dockerfile header for details.
+Use `pytorch-sail-buildenv:2.14.1-sdk2.2.1` as `PPU_IMAGE` below. See the Dockerfile for download and package-index options.
 
-**Step 2 — run the two-stage build.** Stage one is `python3 -m tools.sailify` (in this version, `sailify` is no longer part of `setup.py`). By default, it converts the source tree in place, rewriting the mounted checkout. To keep the checkout untouched, convert to a separate directory instead: add `-e SAILIFY_OUTPUT_DIR=<outside-the-source-tree>`, pass `--output-dir "$SAILIFY_OUTPUT_DIR"` to sailify, and build from that directory. Stage two compiles and installs the wheel from the converted tree:
+</details>
+
+From the checkout root, start the container. Compilation does not need accelerator device mapping.
 
 ```bash
-docker run --rm --name sail-build-v2141 \
-  -v "$PWD":/workspace/pytorch \
-  -e MAX_JOBS=128 \
-  pytorch-sail-buildenv:2.14.1-sdk2.2.1 \
-  bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
-            cd /workspace/pytorch && USE_SAIL=1 python3 -m tools.sailify && \
-            python3 -m pip install . --no-build-isolation -v'
+# If the SDK image was downloaded as an archive:
+# docker load -i "<sdk-image-archive.tar>"
+export PPU_IMAGE="<local-sail-sdk-image>"
+docker run -it --rm -v "$PWD":/workspace/pytorch -w /workspace/pytorch \
+  --entrypoint /bin/bash "$PPU_IMAGE"
 ```
 
-When the build finishes, the wheel is in `dist/` (the source tree itself, since the conversion happens in place). The image already sets the build options you need: `USE_SAIL=1`, `USE_PCCL=1`, both attention backends, both target architectures (`PYTORCH_SAIL_ARCH="ppu_10;ppu_15"`), the release version numbers, and `MAX_JOBS=128`. To build for a single architecture, add `-e PYTORCH_SAIL_ARCH=ppu_10` (or `ppu_15`) — the compile takes roughly half the time. `BUILD_TEST` defaults to `1` (the C++ test binaries are compiled); set `-e BUILD_TEST=0` for a lean build.
-
-**Step 3 — verify on hardware.** Start the image with the accelerator devices mapped (every device the host exposes, e.g. all `/dev/alixpu*` entries) and run the checks in [Getting Started](#getting-started):
+Run the remaining build commands inside this container. If Python build dependencies are missing, install them first; skip this when using the prepared environment image:
 
 ```bash
-docker run -it --rm \
-  --device /dev/alixpu --device /dev/alixpu_ctl --device /dev/alixpu_sep \
-  --device /dev/alixpu-caps \
-  -v "$PWD":/workspace/pytorch \
-  pytorch-sail-buildenv:2.14.1-sdk2.2.1 \
-  bash -lc 'source "$PPU_SDK/envsetup.sh" && source "$PCCL_HOME/envsetup.sh" release && \
-            pip install /workspace/pytorch/dist/torch-2.14.1-*.whl && \
-            python3 -c "import torch; print(torch.__version__, torch.version.sail); print(torch.cuda.device_count())"'
+python3 -m pip install "setuptools>=77.0.3,<82" "scikit-build-core>=1.0" wheel \
+  "packaging>=24.2" pyyaml numpy requests six "typing-extensions>=4.15.0" \
+  "sympy>=1.13.3" "networkx>=2.5.1" jinja2 "fsspec>=0.8.5" filelock \
+  "optree>=0.13.0"
 ```
 
-#### Method 2: Use a downloaded SAIL SDK image
+Also ensure CMake >=3.27, Ninja, a C/C++ compiler, Git, and `patch` are available. This prepares the environment; it does not install the Torch wheel.
 
-Download a compatible SAIL SDK Docker image from the [T-Head Developer Center download page](https://developer.t-head.cn/download/index.html) and set `PPU_IMAGE` to its local name or tag. The source checkout stays on the host and the build runs inside the container. Import the archive first if the download is an image file:
+#### Build a wheel without installing
+
+Run these steps in the same Bash shell, starting at the checkout root. Source conversion and compilation use a fresh directory outside the checkout; the wheel is written directly to the checkout's `dist/`.
+
+Local storage is recommended for the checkout and its initialized submodules. If copying from network storage is slow, prepare a complete checkout on local storage before starting these steps.
+
+**1. Configure the build.** Keep `TMPDIR` on local storage outside the checkout, with enough space for the converted tree and native build.
 
 ```bash
-docker load -i <downloaded-image-archive.tar>
+# Stop on command failures, including failures inside pipelines.
+set -eo pipefail
+# Remember the checkout root for the final wheel output.
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export REPO_ROOT
+# ${VAR:-default} keeps a non-empty value; otherwise it uses the default.
+# Load the SDK toolchain and runtime paths into this shell.
+export PPU_SDK="${PPU_SDK:-/usr/local/PPU_SDK}"
+export PCCL_HOME="${PCCL_HOME:-/usr/local/pccl}"
+source "$PPU_SDK/envsetup.sh"
+
+# Download matching PCCL from the Developer Center if it is not installed.
+# SDK v2.2.1 example: pccl_hggcrt3_ubuntu2404-v2.2.2.tar.gz (contains pccl/).
+# Extract manually into the existing writable parent of PCCL_HOME; otherwise skip:
+# tar -xzf "/path/to/pccl_hggcrt3_ubuntu2404-v2.2.2.tar.gz" -C "$(dirname "$PCCL_HOME")"
+source "$PCCL_HOME/envsetup.sh" release
+
+# SDK driver settings used by the validated build.
+export UMD_PLATFORM_TYPE=1 HGGC_DRIVER_CANDIDATE=UMD
+# Enable the PPU build, PCCL distributed training, and both SDPA backends.
+export USE_SAIL=1 USE_PCCL=1 USE_DISTRIBUTED=1
+export USE_FLASH_ATTENTION=1 USE_MEM_EFF_ATTENTION=1
+# Tell CMake where to find PCCL headers and libraries.
+export PCCL_ROOT="$PCCL_HOME"
+export PCCL_INCLUDE_DIR="$PCCL_HOME/include" PCCL_LIB_DIR="$PCCL_HOME/lib"
+# Build both architectures by default; choose ppu_10 or ppu_15 for just one.
+export PYTORCH_SAIL_ARCH="${PYTORCH_SAIL_ARCH:-ppu_10;ppu_15}"
+# Set the release version used in the wheel metadata and filename.
+export PYTORCH_VERSION=2.14.1 PYTORCH_BUILD_VERSION=2.14.1 PYTORCH_BUILD_NUMBER=0
+# Disable Caffe2; set BUILD_TEST=0 to skip native C++ test binaries.
+export BUILD_CAFFE2=0 BUILD_TEST="${BUILD_TEST:-1}"
+# Limit concurrent compilation jobs to fit available CPU/RAM.
+export MAX_JOBS="${MAX_JOBS:-128}" CMAKE_BUILD_PARALLEL_LEVEL="${MAX_JOBS:-128}"
+# Clear inherited build/import overrides; unset USE_XNNPACK restores its default.
+unset TORCH_CUDA_ARCH_LIST CUDA_HOME CUDA_PATH CUDACXX USE_XNNPACK LD_PRELOAD
+unset SAILIFY_INJECT_COMPAT_INCLUDE SAILIFY_IN_PLACE PYTHONPATH CMAKE_ARGS
+unset BUILD_PYTHON_ONLY PYTORCH_EXTRA_INSTALL_REQUIREMENTS
+# Pass the selected architecture list to CMake.
+export CMAKE_ARGS="-DPYTORCH_SAIL_ARCH=$PYTORCH_SAIL_ARCH"
+
+# Use a fresh conversion/build directory to avoid stale CMake cache settings.
+BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pytorch-sail-wheel.XXXXXX")"
+export BUILD_ROOT
+export SAILIFY_OUTPUT_DIR="$BUILD_ROOT/sail"
+# Save the wheel in the mounted checkout so it survives container removal.
+export WHEELHOUSE="$REPO_ROOT/dist"
 ```
+
+Set `MAX_JOBS`, `PYTORCH_SAIL_ARCH`, or `BUILD_TEST` before step 1 to override defaults. Adjust the `unset` lines if you intentionally use custom settings. Do not reuse an old `build/` after changing architecture or SDK.
+
+**2. Convert and build.** Build from the converted tree, leaving the original checkout unchanged.
 
 ```bash
-# 1. Clone the PyTorch source code and initialize submodules
-git clone --recursive <pytorch-for-sail-repository-url> -b v2.14.1
-cd pytorch-for-sail
+# Bypass existing editable-install redirects during code generation.
+export SKBUILD_EDITABLE_SKIP="$(python3 -c 'import os,sys; print(os.pathsep.join(str(f.path) for f in sys.meta_path if getattr(f, "path", None)))')"
+# Convert into a separate tree and include SAIL compatibility headers.
+cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT"
+python3 -m tools.sailify --output-dir "$SAILIFY_OUTPUT_DIR" --inject-compat-include
 
-# If --recursive was not used or submodules are incomplete, run:
-git submodule sync
-git submodule update --init --recursive
+# Compile the converted sources, not the original CUDA sources.
+cd "$SAILIFY_OUTPUT_DIR"
+export PYTHONPATH="$SAILIFY_OUTPUT_DIR"
+# Fail if code generation imports torchgen from a different source tree.
+python3 -c 'import pathlib,torchgen.aoti.fallback_ops as m; p=pathlib.Path(m.__file__).resolve(); print(p); p.relative_to(pathlib.Path.cwd().resolve())'
+mkdir -p "$WHEELHOUSE"
+# Build a wheel only; -v prints detailed logs, --wheel-dir selects dist/.
+# --no-build-isolation uses existing build dependencies; --no-deps skips dependency wheels.
+# --no-cache-dir disables the pip cache; it does not clear CMake's build cache.
+python3 -m pip wheel . -v --no-build-isolation --no-deps --no-cache-dir \
+  --wheel-dir "$WHEELHOUSE"
 
-# 2. Start the downloaded SAIL SDK image with the source checkout mounted.
-# Replace the placeholder with the local image name or tag obtained above.
-export PPU_IMAGE=<downloaded-sail-sdk-image>
-docker run -it --rm \
-  -v "$(pwd):/workspace/pytorch-for-sail" \
-  -w /workspace/pytorch-for-sail \
-  --entrypoint /bin/bash \
-  "${PPU_IMAGE}"
-
-# Run the following commands inside the PyTorch-for-SAIL Docker container
-# 3. Configure the build environment
-source /usr/local/PPU_SDK/envsetup.sh
-
-# Starting from artifact version v2.2, PCCL is distributed separately from the
-# SDK. Download a package matching the artifact version and operating system
-# from https://developer.t-head.cn/download/index.html and extract it (only
-# once per container):
-tar zxf <matching-pccl-package>.tar.gz -C /usr/local
-source /usr/local/pccl/envsetup.sh release
-
-# Artifact version v2.1 ships PCCL in the SDK; skip the two lines above and
-# source the SDK environment only in that case.
-
-# 4. Install build dependencies. The 2.14.1 build chain requires the
-# scikit-build-core PEP 517 backend, spin, and setuptools >=77,<82 with
-# packaging >=24.2 for the PEP 639 license metadata:
-pip install "setuptools>=77.0.0,<82" "scikit-build-core>=1.0" spin wheel \
-    "packaging>=24.2" pyyaml numpy requests six "typing-extensions>=4.15.0" \
-    "sympy>=1.13.3" "networkx>=2.5.1" jinja2 "fsspec>=0.8.5" filelock \
-    "optree>=0.13.0"
-
-# Optional: uncomment these variables to print verbose build logs for troubleshooting
-# export CUDA_VERBOSE_BUILD=1      # Print full commands used to compile CUDA sources
-# export CMAKE_VERBOSE_MAKEFILE=1  # Print every compile and link command generated by CMake
-
-# 5. Build configuration. PYTORCH_SAIL_ARCH defaults to "ppu_10;ppu_15" and
-# covers the 810/810E and Zhenwu M890 boards; set it to ppu_10 or ppu_15 to
-# build for a single board only.
-export USE_SAIL=1
-export PYTORCH_SAIL_ARCH="ppu_10;ppu_15"
-export USE_PCCL=1
-export USE_FLASH_ATTENTION=1
-export USE_MEM_EFF_ATTENTION=1
-export BUILD_TEST=1
-export MAX_JOBS=128
-
-# Release version. Without these, the wheel gets a development version tag.
-export PYTORCH_VERSION=2.14.1
-export PYTORCH_BUILD_VERSION=2.14.1
-export PYTORCH_BUILD_NUMBER=0
-export USE_DISTRIBUTED=1
-export BUILD_CAFFE2=0
-
-# 6. Convert the tree and build. By default, sailify converts the source
-# tree in place, so the checkout is rewritten. To keep the checkout
-# untouched, convert out of place instead: export SAILIFY_OUTPUT_DIR to a
-# directory outside the source tree, add
-# --output-dir "${SAILIFY_OUTPUT_DIR}" to the sailify command, and cd
-# "${SAILIFY_OUTPUT_DIR}" before the pip install.
-python3 -m tools.sailify
-python3 -m pip install . --no-build-isolation -v
-# The wheel is written to ./dist/.
+# Return to the checkout and clear temporary import overrides.
+cd "$REPO_ROOT"
+unset PYTHONPATH SKBUILD_EDITABLE_SKIP
 ```
+
+The wheel remains in `dist/` after the container exits. A same-name wheel can be overwritten, so preserve previous artifacts before rebuilding. No Torch installation occurs. CMake install messages refer to wheel staging, not the existing `site-packages`.
+
+The validated package used SDK `2.2.1-184ee6`, PCCL 2.2.2, FlashAttention 2.7.2, and actlize 0.8.0. Wheel integrity and unpacked import/CPU smoke passed without changing the existing installation; hardware regression tests were not run.
+
+#### Install a built wheel manually
+
+Use the target environment's Python and choose its matching wheel. The example below is for CPython 3.12/Linux x86_64; it is not a `manylinux` portability guarantee. Runtime needs compatible SDK/PCCL and linked native libraries, such as MKL/OpenMPI for the validated build; pip does not install these native dependencies.
+
+From the checkout root, check the wheel and install it only when wanted:
+
+```bash
+# Optional: check archive integrity without installing the wheel.
+python3 -m zipfile -t ./dist/torch-2.14.1-cp312-cp312-linux_x86_64.whl
+# Install only when needed, using the target environment's Python.
+python3 -m pip install ./dist/torch-2.14.1-cp312-cp312-linux_x86_64.whl
+```
+
+To replace a same-version Torch installation, add `--force-reinstall`. Use `--no-deps` only when Python dependencies are already satisfied. Source the SDK/PCCL environment before importing Torch. Hardware execution also requires mapping all accelerator device nodes into the container.
 
 ---
 
