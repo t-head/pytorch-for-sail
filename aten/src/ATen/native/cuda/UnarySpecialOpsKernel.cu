@@ -21,6 +21,14 @@ namespace at::native {
 
 constexpr char exp2_name[] = "exp2_kernel";
 void exp2_kernel_cuda(TensorIteratorBase& iter) {
+  #if defined(USE_PPU) || defined(USE_SAIL)
+    // Use the hardware exp2 path (as Inductor does): PPU v.exp2.f32 rounds subnormals
+    // correctly, while SDK exp2f's exp2(x/2)^2 subnormal compensation double-rounds.
+    if (iter.common_dtype() == ScalarType::Float) {
+      gpu_kernel(iter, [] GPU_LAMBDA(float a) -> float { return __exp2f(a); });
+      return;
+    }
+  #endif
   #if AT_USE_JITERATOR()
     AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
         ScalarType::Half, ScalarType::BFloat16, iter.common_dtype(), "exp2_cuda", [&]() {
