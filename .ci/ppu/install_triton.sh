@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TRITON_VERSION="${TRITON_VERSION:-3.6.0}"
+TRITON_VERSION="${TRITON_VERSION:-3.6.0+v0.3.0.sail2.2.0}"
 TRITON_INDEX="${TRITON_INDEX:-${PIP_INDEX:-}}"
 
 if [[ -z "${TRITON_INDEX}" ]]; then
