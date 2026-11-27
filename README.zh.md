@@ -193,7 +193,7 @@ $SAILIFY_OUTPUT_DIR/dist/torch-*.whl
 
 前置条件：
 
-- 已安装 Docker，且网络可拉取基础镜像 `download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005`。
+- 已安装 Docker，且网络可拉取基础镜像 `download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt2-ubuntu24.04-py312-20261123`。
 - 源码已完成子模块初始化（`git submodule update --init --recursive`）。
 - 大容量磁盘上准备一个临时目录（数十 GB 空闲），用于存放源树外构建树与 wheel。
 - 编译 wheel 不需要 PPU 设备；仅运行时需要。

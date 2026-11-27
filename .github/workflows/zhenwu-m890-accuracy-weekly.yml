@@ -14,13 +14,13 @@ permissions:
   actions: read
 
 env:
-  IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.0-hggcrt3-ubuntu24.04-py312-20261005
+  IMAGE: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt2-ubuntu24.04-py312-20261123
   NAMESPACE: ppu-sched
   HOST_VOLUMES: "/nas_aisw:/nas_aisw,/wl_nas:/mnt/wl_nas"
   SOURCE_DIR: /workspace/source
   NODE_SELECTOR: "board-type=ZW-M890P"
   PIP_INDEX: https://download.t-head.cn/artifactory/api/pypi/pypi_index/simple
-  TRITON_VERSION: "3.6.0"
+   TRITON_VERSION: "3.6.0+v0.3.0.sail2.2.0"
   WHEEL_DIR_REL: .ci/ppu/wheelhouse
 
 jobs:
