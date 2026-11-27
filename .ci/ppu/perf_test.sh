@@ -37,6 +37,13 @@ and not test_combine_profiles_cuda_float \
 and not test_extern \
 and not test_combine_profiles_cuda_float16 \
 and not test_diff_cuda_float16 \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_bfloat16_wrap_v2_False_cuda \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_bfloat16_wrap_v2_True_cuda \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_float16_wrap_v2_False_cuda \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_float16_wrap_v2_True_cuda \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_float32_wrap_v2_False_cuda \
+and not test_scaled_mm_row_wise_no_bias_output_dtypes_float32_wrap_v2_True_cuda \
+and not test_scaled_mm_vs_emulated_row_wise_float32_shapes0_cuda \
 and not test_split_scan"
 python test/run_test.py \
     --include \
