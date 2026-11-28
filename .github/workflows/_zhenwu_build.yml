@@ -16,7 +16,7 @@ on:
       docker-image:
         description: Zhenwu PPU image used for building
         type: string
-        default: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt2-ubuntu24.04-py312-20261123
+        default: download.t-head.cn/docker_release/ppu:sdk2.2.1-hggcrt3-ubuntu24.04-py312-20261123
       source-ref:
         description: "Ref to build; empty = PR head sha / current ref. Used to select the target branch when refreshing the cache"
         type: string
